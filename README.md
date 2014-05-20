@@ -9,6 +9,8 @@ caching strategies.
 For a detailed explanation, see the chapter on depcache in the book
 `The Performance of Open Source Applications` on [this page](http://aosabook.org/en/posa/zotonic.html#posa.zotonic.depcache).
 
+[![Build Status](https://travis-ci.org/zotonic/depcache.svg)](https://travis-ci.org/zotonic/depcache)
+
 Usage
 -----
 
