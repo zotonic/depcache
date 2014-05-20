@@ -1,0 +1,11 @@
+{application, depcache,
+ [
+  {description, "In-memory cache with cache key dependencies"},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {env, []}
+ ]}.

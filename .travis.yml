@@ -1,0 +1,22 @@
+language: erlang
+otp_release:
+  - R16B
+  - R15B03
+script: make test
+branches:
+  only:
+    - master
+notifications:
+  email:
+    recipients:
+      - zotonic-commits@googlegroups.com
+    on_success: change #[always|never|change] # default: change
+    on_failure: always #[always|never|change] # default: always
+  irc:
+    channels:
+      - "chat.freenode.net#zotonic"
+    on_success: change #[always|never|change] # default: change
+    on_failure: always #[always|never|change] # default: always
+    template:
+      - "New commit on %{repository_name}/%{branch} by %{author}:  %{message} (%{commit}) "
+      - "Build details: %{build_url}"
