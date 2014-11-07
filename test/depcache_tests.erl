@@ -3,7 +3,7 @@
 -module(depcache_tests).
 
 -include_lib("eunit/include/eunit.hrl").
-
+-include_lib("depcache/include/depcache.hrl").
 
 %% simple_test() ->
 %% 	C = z_context:new(testsandbox),
@@ -81,17 +81,20 @@ get_set_depend_test() ->
     depcache:flush(test_key_dep, C),
     ?assertEqual(undefined, depcache:get(test_key, C)).
 
+increase(X) ->
+    I = case erlang:get(X) of
+            undefined -> 1;
+            Num -> Num + 1
+        end,
+    erlang:put(X, I),
+    I.
+
 
 memo_test() ->
     {ok, C} = depcache:start_link([]),
 
     IncreaserFun = fun() ->
-                           I = case erlang:get(incr) of
-                                   undefined -> 1;
-                                   Num -> Num + 1
-                               end,
-                           erlang:put(incr, I),
-                           I
+                           increase(x)
                    end,
     
     ?assertEqual(1, depcache:memo(IncreaserFun, test_key, C)), % uncached
@@ -99,4 +102,17 @@ memo_test() ->
     depcache:flush(test_key, C),
     ?assertEqual(2, depcache:memo(IncreaserFun, test_key, C)), % uncached again
     ?assertEqual(2, depcache:memo(IncreaserFun, test_key, C)). % cached again
+
+
+
+memo_record_test() ->
+    {ok, C} = depcache:start_link([]),
+
+    Fun = fun() -> V = increase(y), #memo{value=V, deps=[dep]} end,
+    
+    ?assertEqual(1, depcache:memo(Fun, test_key1, C)), % uncached
+    ?assertEqual(1, depcache:memo(Fun, test_key1, C)), % cached (no increase)
+    depcache:flush(dep, C), %% flush the dep
+    ?assertEqual(2, depcache:memo(Fun, test_key1, C)), % uncached again
+    ?assertEqual(2, depcache:memo(Fun, test_key1, C)). % cached again
 

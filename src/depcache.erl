@@ -22,6 +22,8 @@
 -author("Marc Worrell <marc@worrell.nl>").
 -behaviour(gen_server).
 
+-include_lib("depcache/include/depcache.hrl").
+
 %% gen_server API
 -export([start_link/1, start_link/2]).
 
@@ -91,16 +93,25 @@ memo(F, Key, MaxAge, Dep, Server) ->
             Value;
         undefined ->
             try
-                Value = case F of
-                    {M,F,A} -> erlang:apply(M,F,A);
-                    {M,F} -> M:F();
-                    F when is_function(F) -> F()
-                end,
+                Value =
+                    case F of
+                        {M,F,A} -> erlang:apply(M,F,A);
+                        {M,F} -> M:F();
+                        F when is_function(F) -> F()
+                    end,
+                {Value1, MaxAge1, Dep1} =
+                    case Value of
+                        #memo{value=V, maxage=MA, deps=D} ->
+                            MA1 = case is_integer(MA) of true -> MA; false -> MaxAge end,
+                            {V, MA1, Dep++D};
+                        _ ->
+                            {Value, MaxAge, Dep}
+                    end,
                 case MaxAge of
-                    0 -> memo_send_replies(Key, Value, Server);
-                    _ -> set(Key, Value, MaxAge, Dep, Server)
+                    0 -> memo_send_replies(Key, Value1, Server);
+                    _ -> set(Key, Value1, MaxAge1, Dep1, Server)
                 end,
-                Value
+                Value1
             catch
                 _: R ->  memo_send_errors(Key, {R, erlang:get_stacktrace()}, Server)
             end

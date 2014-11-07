@@ -1,3 +1,4 @@
 .eunit
 *.beam
 /ebin/depcache.app
+/.rebar/erlcinfo
