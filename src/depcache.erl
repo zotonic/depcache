@@ -282,6 +282,8 @@ get_process_dict(Key, Server) ->
                     erlang:put(depcache_count, incr(erlang:get(depcache_count))),
                     Value
             end;
+        false when is_atom(Server) ->
+            get_ets(Key, Server);
         false ->
             depcache_disabled
     end.
