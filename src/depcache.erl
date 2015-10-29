@@ -1,10 +1,10 @@
 %% @author Marc Worrell <marc@worrell.nl>
-%% @copyright 2009-2010  Marc Worrell
+%% @copyright 2009-2015  Marc Worrell
 %% @copyright 2014 Arjan Scherpenisse
 %%
 %% @doc In-memory caching server with dependency checks and local in process memoization of lookups.
 
-%% Copyright 2009-2010 Marc Worrell, 2014 Arjan Scherpenisse
+%% Copyright 2009-2015 Marc Worrell, 2014 Arjan Scherpenisse
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -47,12 +47,13 @@ start_link(Config) ->
     gen_server:start_link(?MODULE, Config, []).
 
 start_link(Name, Config) -> 
-    gen_server:start_link({local, Name}, ?MODULE, Config, []).
+    gen_server:start_link({local, Name}, ?MODULE, [{name,Name}|Config], []).
 
+-define(META_TABLE_PREFIX, $m).
+-define(DEPS_TABLE_PREFIX, $p).
+-define(DATA_TABLE_PREFIX, $d).
 
--define(META_TABLE, depcache_meta).
--define(DEPS_TABLE, depcache_deps).
--define(DATA_TABLE, depcache_data).
+-define(NAMED_TABLE(Name,Prefix), list_to_atom([Prefix,$:|atom_to_list(Name)])).
 
 %% One hour, in seconds
 -define(HOUR,     3600).
@@ -248,11 +249,18 @@ get_tables(Server) ->
             get_tables1(Server)
     end.
 
-    get_tables1(Server) ->
-        {ok, Tables} = gen_server:call(Server, get_tables),
-        erlang:put(depcache_tables, {ok, Server, Tables}),
-        Tables.
-
+get_tables1(Server) when is_pid(Server) ->
+    {ok, Tables} = gen_server:call(Server, get_tables),
+    erlang:put(depcache_tables, {ok, Server, Tables}),
+    Tables;
+get_tables1(Server) when is_atom(Server) ->
+    Tables = {
+        ?NAMED_TABLE(Server, ?META_TABLE_PREFIX),
+        ?NAMED_TABLE(Server, ?DEPS_TABLE_PREFIX),
+        ?NAMED_TABLE(Server, ?DATA_TABLE_PREFIX)
+    },
+    erlang:put(depcache_tables, {ok, Server, Tables}),
+    Tables.
 
 %% @doc Fetch a value from the dependency cache, using the in-process cached tables.
 get_process_dict(Key, Server) ->
@@ -333,15 +341,33 @@ get_now() ->
 %% @doc Initialize the depcache.  Creates ets tables for the deps, meta and data.  Spawns garbage collector.
 init(Config) ->
     MemoryMax = 1024 * 1024 * case proplists:get_value(memory_max, Config) of undefined -> ?MEMORY_MAX; Mbs -> Mbs end,
-    
-    MetaTable = ets:new(?META_TABLE, [set, {keypos, 2}, protected, {read_concurrency, true}]),
-    DepsTable = ets:new(?DEPS_TABLE, [set, {keypos, 2}, protected, {read_concurrency, true}]),
-    DataTable = ets:new(?DATA_TABLE, [set, {keypos, 1}, protected, {read_concurrency, true}]),
-    State = #state{now=now_sec(), serial=0, meta_table=MetaTable, deps_table=DepsTable, data_table=DataTable, wait_pids=dict:new()},
-    
+    State = case proplists:lookup(name, Config) of
+        none ->
+            #state{
+                meta_table=ets:new(meta_table, [set, {keypos, 2}, protected, {read_concurrency, true}]),
+                deps_table=ets:new(deps_table, [set, {keypos, 2}, protected, {read_concurrency, true}]),
+                data_table=ets:new(data_table, [set, {keypos, 1}, protected, {read_concurrency, true}])
+            };
+        {name, Name} when is_atom(Name) ->
+            #state{
+                meta_table=ets:new(?NAMED_TABLE(Name, ?META_TABLE_PREFIX),
+                                   [set, named_table, {keypos, 2}, protected, {read_concurrency, true}]),
+                deps_table=ets:new(?NAMED_TABLE(Name, ?DEPS_TABLE_PREFIX),
+                                   [set, named_table, {keypos, 2}, protected, {read_concurrency, true}]),
+                data_table=ets:new(?NAMED_TABLE(Name, ?DATA_TABLE_PREFIX),
+                                   [set, named_table, {keypos, 1}, protected, {read_concurrency, true}])
+            }
+    end,
+    State1 = State#state{
+        now=now_sec(),
+        serial=0,
+        wait_pids=dict:new()
+    },
     timer:send_interval(1000, tick),
-    spawn_link(?MODULE, cleanup, [self(), MetaTable, DepsTable, DataTable, MemoryMax]),
-    {ok, State}.
+    spawn_link(?MODULE, 
+               cleanup, 
+               [self(), State1#state.meta_table, State1#state.deps_table, State1#state.data_table, MemoryMax]),
+    {ok, State1}.
 
 
 %%--------------------------------------------------------------------
