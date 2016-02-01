@@ -1,10 +1,9 @@
 %% @author Marc Worrell <marc@worrell.nl>
-%% @copyright 2009-2015  Marc Worrell
-%% @copyright 2014 Arjan Scherpenisse
+%% @copyright 2009-2016 Marc Worrell, Arjan Scherpenisse
 %%
 %% @doc In-memory caching server with dependency checks and local in process memoization of lookups.
 
-%% Copyright 2009-2015 Marc Worrell, 2014 Arjan Scherpenisse
+%% Copyright 2009-2016 Marc Worrell, Arjan Scherpenisse
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -30,7 +29,7 @@
 %% depcache API
 -export([set/3, set/4, set/5, get/2, get_wait/2, get/3, get_subkey/3, flush/2, flush/1, size/1]).
 -export([memo/2, memo/3, memo/4, memo/5]).
--export([in_process/0, in_process/1, flush_process_dict/0]).
+-export([in_process_server/1, in_process/1, flush_process_dict/0]).
 
 %% gen_server exports
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -188,7 +187,7 @@ get(Key, Server) ->
 %% @spec get_subkey(Key, SubKey, Server) -> {ok, Data} | undefined
 %% @doc Fetch the key from the cache, return the data or an undefined if not found (or not valid)
 get_subkey(Key, SubKey, Server) ->
-    case in_process() of
+    case in_process_server(Server) of
         true ->
             case erlang:get({depcache, {subkey, Key, SubKey}}) of
                 {memo, Value} ->
@@ -264,7 +263,7 @@ get_tables1(Server) when is_atom(Server) ->
 
 %% @doc Fetch a value from the dependency cache, using the in-process cached tables.
 get_process_dict(Key, Server) ->
-    case in_process() of
+    case in_process_server(Server) of
         true ->
             case erlang:get({depcache, Key}) of
                 {memo, Value} ->
@@ -303,8 +302,15 @@ get_ets(Key, Server) ->
 
 
 %% @doc Check if we use a local process dict cache
-in_process() ->
-    erlang:get(depcache_in_process) =:= true.
+in_process_server(Server) ->
+    case erlang:get(depcache_in_process) =:= true of
+        true ->
+            _ = get_tables(Server),
+            true;
+        false ->
+            false
+    end.
+
 
 %% @doc Enable or disable the in-process caching using the process dictionary
 in_process(true) ->
