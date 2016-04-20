@@ -16,6 +16,6 @@ clean:
 
 ./rebar3:
 	erl -noshell -s inets start -s ssl start \
-        -eval '{ok, saved_to_file} = httpc:request(get, {"$(REBAR_URL)", []}, [], [{stream, "./rebar"}])' \
+        -eval '{ok, saved_to_file} = httpc:request(get, {"$(REBAR_URL)", []}, [], [{stream, "./rebar3"}])' \
         -s inets stop -s init stop
-	chmod +x ./rebar
+	chmod +x ./rebar3
