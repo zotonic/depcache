@@ -1,11 +1,14 @@
 {application, depcache,
  [
   {description, "In-memory cache with cache key dependencies"},
-  {vsn, "1"},
+  {vsn, "1.2.1"},
   {registered, []},
   {applications, [
                   kernel,
                   stdlib
                  ]},
-  {env, []}
+  {env, []},
+  {maintainers, ["Arjan Scherpenisse", "Marc Worrell"]},
+  {licenses, ["Apache 2"]},
+  {links, [{"Github", "https://github.com/zotonic/depcache"}]}
  ]}.
