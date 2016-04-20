@@ -1,7 +1,7 @@
 language: erlang
 otp_release:
-  - R16B
-  - R15B03
+  - 18.0
+  - 17.4
 script: make test
 branches:
   only:
