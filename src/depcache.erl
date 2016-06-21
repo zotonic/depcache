@@ -95,8 +95,8 @@ memo(F, Key, MaxAge, Dep, Server) ->
             try
                 Value =
                     case F of
-                        {M,F,A} -> erlang:apply(M,F,A);
-                        {M,F} -> M:F();
+                        {M,F0,A} -> erlang:apply(M,F0,A);
+                        {M,F0} -> M:F0();
                         F when is_function(F) -> F()
                     end,
                 {Value1, MaxAge1, Dep1} =
@@ -316,7 +316,7 @@ in_process_server(Server) ->
 in_process(true) ->
     erlang:put(depcache_in_process, true);
 in_process(false) ->
-    erlang:erase(depache_in_process),
+    erlang:erase(depcache_in_process),
     flush_process_dict();
 in_process(undefined) ->
     in_process(false).
@@ -324,7 +324,7 @@ in_process(undefined) ->
 %% @doc Flush all items memoized in the process dictionary.
 flush_process_dict() ->
     [ erlang:erase({depcache, Key}) || {{depcache, Key},_Value} <- erlang:get() ],
-    erlang:erase(depache_now),
+    erlang:erase(depcache_now),
     erlang:put(depcache_count, 0),
     ok.
 
@@ -334,7 +334,7 @@ get_now() ->
     case erlang:get(depcache_now) of
         undefined ->
             Now = now_sec(),
-            erlang:put(depache_now, Now),
+            erlang:put(depcache_now, Now),
             Now;
         Now ->
             Now
@@ -554,7 +554,7 @@ get_in_depcache_ets(Key, State) ->
     end.
 
 
-%% @doc Get a value from the depache.  Called by the depcache and other processes.
+%% @doc Get a value from the depcache.  Called by the depcache and other processes.
 %% @spec get_concurrent(term(), now:int(), tid(), tid(), tid()) -> {ok, term()} | undefined | flush
 get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) ->
     case ets:lookup(MetaTable, Key) of
