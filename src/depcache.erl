@@ -91,12 +91,14 @@ memo(F, Key, MaxAge, Dep, Server) ->
     case ?MODULE:get_wait(Key1, Server) of
         {ok, Value} ->
             Value;
+        {throw, R} ->
+            throw(R);
         undefined ->
             try
                 Value =
                     case F of
-                        {M,F0,A} -> erlang:apply(M,F0,A);
-                        {M,F0} -> M:F0();
+                        {M,F,A} -> erlang:apply(M,F,A);
+                        {M,F} -> M:F();
                         F when is_function(F) -> F()
                     end,
                 {Value1, MaxAge1, Dep1} =
@@ -113,28 +115,31 @@ memo(F, Key, MaxAge, Dep, Server) ->
                 end,
                 Value1
             catch
-                _: R ->  memo_send_errors(Key, {R, erlang:get_stacktrace()}, Server)
+                Class:R ->
+                    error_logger:error_msg("Error in memo ~p:~p in ~p",
+                                           [Class, R, erlang:get_stacktrace()]),
+                    memo_send_errors(Key, {throw, R}, Server),
+                    throw(R)
             end
     end.
 
-    %% @doc Calculate the key used for memo functions.
-    memo_key({M,F,A}) -> 
-        WithoutContext = lists:filter(fun(T) when is_tuple(T) andalso element(1, T) =:= context -> false; (_) -> true end, A),
-        {M,F,WithoutContext};
-    memo_key({M,F}) -> 
-        {M,F}.
+%% @doc Calculate the key used for memo functions.
+memo_key({M,F,A}) -> 
+    WithoutContext = lists:filter(fun(T) when is_tuple(T) andalso element(1, T) =:= context -> false; (_) -> true end, A),
+    {M,F,WithoutContext};
+memo_key({M,F}) -> 
+    {M,F}.
 
-    %% @doc Send the calculated value to the processes waiting for the result.
-    memo_send_replies(Key, Value, Server) ->
-        Pids = get_waiting_pids(Key, Server),
-        [ catch gen_server:reply(Pid, {ok, Value}) || Pid <- Pids ],
-        ok.
+%% @doc Send the calculated value to the processes waiting for the result.
+memo_send_replies(Key, Value, Server) ->
+    Pids = get_waiting_pids(Key, Server),
+    [ catch gen_server:reply(Pid, {ok, Value}) || Pid <- Pids ],
+    ok.
 
-    %% @doc Send an error to the processes waiting for the result.
-    memo_send_errors(Key, Reason, Server) ->
-        Pids = get_waiting_pids(Key, Server),
-        [ catch gen_server:reply(Pid, {error, Reason}) || Pid <- Pids ],
-        {error, Reason}.
+%% @doc Send an error to the processes waiting for the result.
+memo_send_errors(Key, Exception, Server) ->
+    Pids = get_waiting_pids(Key, Server),
+    [ catch gen_server:reply(Pid, Exception) || Pid <- Pids ].
 
 
 %% @spec set(Key, Data, Server) -> void()
@@ -316,7 +321,7 @@ in_process_server(Server) ->
 in_process(true) ->
     erlang:put(depcache_in_process, true);
 in_process(false) ->
-    erlang:erase(depcache_in_process),
+    erlang:erase(depache_in_process),
     flush_process_dict();
 in_process(undefined) ->
     in_process(false).
@@ -324,7 +329,7 @@ in_process(undefined) ->
 %% @doc Flush all items memoized in the process dictionary.
 flush_process_dict() ->
     [ erlang:erase({depcache, Key}) || {{depcache, Key},_Value} <- erlang:get() ],
-    erlang:erase(depcache_now),
+    erlang:erase(depache_now),
     erlang:put(depcache_count, 0),
     ok.
 
@@ -334,7 +339,7 @@ get_now() ->
     case erlang:get(depcache_now) of
         undefined ->
             Now = now_sec(),
-            erlang:put(depcache_now, Now),
+            erlang:put(depache_now, Now),
             Now;
         Now ->
             Now
@@ -554,7 +559,7 @@ get_in_depcache_ets(Key, State) ->
     end.
 
 
-%% @doc Get a value from the depcache.  Called by the depcache and other processes.
+%% @doc Get a value from the depache.  Called by the depcache and other processes.
 %% @spec get_concurrent(term(), now:int(), tid(), tid(), tid()) -> {ok, term()} | undefined | flush
 get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) ->
     case ets:lookup(MetaTable, Key) of
