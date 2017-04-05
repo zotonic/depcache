@@ -353,7 +353,9 @@ get_now() ->
 %% @spec init(Config) -> {ok, State}
 %% @doc Initialize the depcache.  Creates ets tables for the deps, meta and data.  Spawns garbage collector.
 init(Config) ->
-    MemoryMax = 1024 * 1024 * case proplists:get_value(memory_max, Config) of undefined -> ?MEMORY_MAX; Mbs -> Mbs end,
+    MemoryMaxMbs = proplists:get_value(memory_max, Config, ?MEMORY_MAX),
+    MemoryMaxWords = 1024 * 1024 * MemoryMaxMbs div erlang:system_info(wordsize),
+
     State = case proplists:lookup(name, Config) of
         none ->
             #state{
@@ -377,9 +379,9 @@ init(Config) ->
         wait_pids=dict:new()
     },
     timer:send_interval(1000, tick),
-    spawn_link(?MODULE, 
-               cleanup, 
-               [self(), State1#state.meta_table, State1#state.deps_table, State1#state.data_table, MemoryMax]),
+    spawn_link(?MODULE,
+               cleanup,
+               [self(), State1#state.meta_table, State1#state.deps_table, State1#state.data_table, MemoryMaxWords]),
     {ok, State1}.
 
 
