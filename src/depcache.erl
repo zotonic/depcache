@@ -353,7 +353,7 @@ get_now() ->
 %% @spec init(Config) -> {ok, State}
 %% @doc Initialize the depcache.  Creates ets tables for the deps, meta and data.  Spawns garbage collector.
 init(Config) ->
-    MemoryMaxMbs = proplists:get_value(memory_max, Config, ?MEMORY_MAX),
+    MemoryMaxMbs = case proplists:get_value(memory_max, Config) of undefined -> ?MEMORY_MAX; Mbs -> Mbs end,
     MemoryMaxWords = 1024 * 1024 * MemoryMaxMbs div erlang:system_info(wordsize),
 
     State = case proplists:lookup(name, Config) of
