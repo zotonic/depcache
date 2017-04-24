@@ -758,7 +758,7 @@ cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr, Now, cache_full
             RandomDelete = fun
                                 ({ok, #meta{key=Key}}) ->
                                     case random:uniform(10) of
-                                        10 -> ?MODULE:flush(Key);
+                                        10 -> gen_server:cast(Pid, {flush, Key});
                                         _  -> ok
                                     end;
                                 (flushed) -> flushed
