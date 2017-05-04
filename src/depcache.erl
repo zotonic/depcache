@@ -36,16 +36,42 @@
 
 
 %% internal export
--export([cleanup/5, cleanup/9]).
+-export([cleanup/1, cleanup/5]).
 
--record(state, {now, serial, meta_table, deps_table, data_table, wait_pids}).
+-record(tables, {
+    meta_table :: ets:tab(),
+    deps_table :: ets:tab(),
+    data_table :: ets:tab()
+}).
+
+-record(state, {now, serial, tables, wait_pids}).
 -record(meta,  {key, expire, serial, depend}).
 -record(depend,{key, serial}).
 
-start_link(Config) -> 
+-record(cleanup_state, {
+    pid :: pid(),
+    tables :: #tables{},
+    name :: atom(),
+    memory_max :: non_neg_integer(),
+    callback :: mfa()
+}).
+
+%% @doc Start a depcache process.
+%%
+%% For Config, you can pass:
+%% {callback, {Module, Function, Arguments}}: depcache event callback
+%% {memory_max, MaxMemoryInMB}: number of MB to limit depcache size at.
+-spec start_link(Config :: proplists:proplist()) -> {ok, pid()} | ignore | {error, term()}.
+start_link(Config) ->
     gen_server:start_link(?MODULE, Config, []).
 
-start_link(Name, Config) -> 
+%% @doc Start a named depcache process.
+%%
+%% For Config, you can pass:
+%% {callback, {Module, Function, Arguments}}: depcache event callback
+%% {memory_max, MaxMemoryInMB}: number of MB to limit depcache size at.
+-spec start_link(atom(), Config :: proplists:proplist()) -> {ok, pid()} | ignore | {error, term()}.
+start_link(Name, Config) ->
     gen_server:start_link({local, Name}, ?MODULE, [{name,Name}|Config], []).
 
 -define(META_TABLE_PREFIX, $m).
@@ -356,15 +382,15 @@ init(Config) ->
     MemoryMaxMbs = case proplists:get_value(memory_max, Config) of undefined -> ?MEMORY_MAX; Mbs -> Mbs end,
     MemoryMaxWords = 1024 * 1024 * MemoryMaxMbs div erlang:system_info(wordsize),
 
-    State = case proplists:lookup(name, Config) of
+    Tables = case proplists:lookup(name, Config) of
         none ->
-            #state{
+            #tables{
                 meta_table=ets:new(meta_table, [set, {keypos, 2}, protected, {read_concurrency, true}]),
                 deps_table=ets:new(deps_table, [set, {keypos, 2}, protected, {read_concurrency, true}]),
                 data_table=ets:new(data_table, [set, {keypos, 1}, protected, {read_concurrency, true}])
             };
         {name, Name} when is_atom(Name) ->
-            #state{
+            #tables{
                 meta_table=ets:new(?NAMED_TABLE(Name, ?META_TABLE_PREFIX),
                                    [set, named_table, {keypos, 2}, protected, {read_concurrency, true}]),
                 deps_table=ets:new(?NAMED_TABLE(Name, ?DEPS_TABLE_PREFIX),
@@ -373,7 +399,8 @@ init(Config) ->
                                    [set, named_table, {keypos, 1}, protected, {read_concurrency, true}])
             }
     end,
-    State1 = State#state{
+    State = #state{
+        tables = Tables,
         now=now_sec(),
         serial=0,
         wait_pids=dict:new()
@@ -381,8 +408,14 @@ init(Config) ->
     timer:send_interval(1000, tick),
     spawn_link(?MODULE,
                cleanup,
-               [self(), State1#state.meta_table, State1#state.deps_table, State1#state.data_table, MemoryMaxWords]),
-    {ok, State1}.
+               [#cleanup_state{
+                   pid = self(),
+                   tables = Tables,
+                   name = proplists:get_value(name, Config),
+                   memory_max = MemoryMaxWords,
+                   callback = proplists:get_value(callback, Config)
+               }]),
+    {ok, State}.
 
 
 %%--------------------------------------------------------------------
@@ -396,13 +429,13 @@ init(Config) ->
 %%--------------------------------------------------------------------
 
 %% @doc Return the ets tables used by the cache
-handle_call(get_tables, _From, State) ->
-    {reply, {ok, {State#state.meta_table, State#state.deps_table, State#state.data_table}}, State};
+handle_call(get_tables, _From, #state{tables = Tables} = State) ->
+    {reply, {ok, {Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table}}, State};
 
 %% @doc Fetch a key from the cache. When the key is not available then let processes wait till the
 %% key is available.
-handle_call({get_wait, Key}, From, State) ->
-    case get_concurrent(Key, State#state.now, State#state.meta_table, State#state.deps_table, State#state.data_table) of
+handle_call({get_wait, Key}, From, #state{tables = Tables} = State) ->
+    case get_concurrent(Key, State#state.now, Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table) of
         NotFound when NotFound =:= flush; NotFound =:= undefined ->
             case NotFound of
                 flush -> flush_key(Key, State);
@@ -448,28 +481,28 @@ handle_call({get, Key, SubKey}, _From, State) ->
     end;
 
 %% Add an entry to the cache table
-handle_call({set, Key, Data, MaxAge, Depend}, _From, State) ->
+handle_call({set, Key, Data, MaxAge, Depend}, _From, #state{tables = Tables} = State) ->
     erase_process_dict(),
     State1 = State#state{serial=State#state.serial+1},
     case MaxAge of
         0 ->
-            ets:delete(State1#state.meta_table, Key),
-            ets:delete(State1#state.data_table, Key);
+            ets:delete(Tables#tables.meta_table, Key),
+            ets:delete(Tables#tables.data_table, Key);
         _ ->
-            ets:insert(State1#state.data_table, {Key, Data}),
-            ets:insert(State1#state.meta_table, #meta{key=Key, expire=State1#state.now+MaxAge, serial=State1#state.serial, depend=Depend})
+            ets:insert(Tables#tables.data_table, {Key, Data}),
+            ets:insert(Tables#tables.meta_table, #meta{key=Key, expire=State1#state.now+MaxAge, serial=State1#state.serial, depend=Depend})
     end,
     
     %% Make sure all dependency keys are available in the deps table
-    AddDepend = fun(D) -> 
-                    ets:insert_new(State#state.deps_table, #depend{key=D, serial=State1#state.serial})
+    AddDepend = fun(D) ->
+                    ets:insert_new(Tables#tables.deps_table, #depend{key=D, serial=State1#state.serial})
                 end,
     lists:foreach(AddDepend, Depend),
     
     %% Flush the key itself in the dependency table - this will invalidate depending items
     case is_simple_key(Key) of
         true  -> ok;
-        false -> ets:insert(State1#state.deps_table, #depend{key=Key, serial=State#state.serial})
+        false -> ets:insert(Tables#tables.deps_table, #depend{key=Key, serial=State#state.serial})
     end,
 
     %% Check if other processes are waiting for this key, send them the data
@@ -486,10 +519,10 @@ handle_call({flush, Key}, _From, State) ->
     flush_key(Key, State),
     {reply, ok, State};
 
-handle_call(flush, _From, State) ->
-    ets:delete_all_objects(State#state.data_table),
-    ets:delete_all_objects(State#state.meta_table),
-    ets:delete_all_objects(State#state.deps_table),
+handle_call(flush, _From, #state{tables = Tables} = State) ->
+    ets:delete_all_objects(Tables#tables.data_table),
+    ets:delete_all_objects(Tables#tables.meta_table),
+    ets:delete_all_objects(Tables#tables.deps_table),
     erase_process_dict(),
     {reply, ok, State}.
 
@@ -506,10 +539,10 @@ handle_cast({flush, Key}, State) ->
     flush_key(Key, State),
     {noreply, State};
 
-handle_cast(flush, State) ->
-    ets:delete_all_objects(State#state.data_table),
-    ets:delete_all_objects(State#state.meta_table),
-    ets:delete_all_objects(State#state.deps_table),
+handle_cast(flush, #state{tables = Tables} = State) ->
+    ets:delete_all_objects(Tables#tables.data_table),
+    ets:delete_all_objects(Tables#tables.meta_table),
+    ets:delete_all_objects(Tables#tables.deps_table),
     erase_process_dict(),
     {noreply, State};
 
@@ -549,9 +582,9 @@ get_in_depcache(Key, State) ->
 incr(undefined) -> 1;
 incr(N) -> N+1.
 
-get_in_depcache_ets(Key, State) ->
-    case get_concurrent(Key, State#state.now, State#state.meta_table, State#state.deps_table, State#state.data_table) of
-        flush -> 
+get_in_depcache_ets(Key, #state{tables = Tables} = State) ->
+    case get_concurrent(Key, State#state.now, Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table) of
+        flush ->
             flush_key(Key, State),
             undefined;
         undefined ->
@@ -591,17 +624,17 @@ get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) ->
 %% @doc Check if a key is usable as dependency key.  That is a string, atom, integer etc, but not a list of lists.
 is_simple_key([]) ->
     true;
-is_simple_key([H|_]) -> 
+is_simple_key([H|_]) ->
     not is_list(H);
 is_simple_key(_Key) ->
     true.
 
 
 %% @doc Flush a key from the cache, reset the in-process cache as well (we don't know if any cached value had a dependency)
-flush_key(Key, State) ->
-    ets:delete(State#state.data_table, Key),
-    ets:delete(State#state.deps_table, Key),
-    ets:delete(State#state.meta_table, Key),
+flush_key(Key, #state{tables = Tables}) ->
+    ets:delete(Tables#tables.data_table, Key),
+    ets:delete(Tables#tables.deps_table, Key),
+    ets:delete(Tables#tables.meta_table, Key),
     erase_process_dict().
 
 
@@ -696,69 +729,69 @@ find_value(_Key, _Data) ->
 %%      This cleanup process starts to delete random entries.  By using a random delete we don't need to keep
 %%      a LRU list, which is a bit expensive.
 
-cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax) ->
-    {A1,A2,A3} = now(),
-    random:seed(A1, A2, A3),
-    ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, 0, now_sec(), normal, 0).
+cleanup(#cleanup_state{} = State) ->
+    ?MODULE:cleanup(State, 0, now_sec(), normal, 0).
 
 %% Wrap around the end of table
-cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, '$end_of_table', Now, _Mode, Ct) ->
+cleanup(#cleanup_state{tables = #tables{meta_table = MetaTable}} = State, '$end_of_table', Now, _Mode, Ct) ->
     case ets:info(MetaTable, size) of
-        0 -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, 0, Now, cleanup_mode(DataTable, MemoryMax), 0);
-        _ -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, 0, Now, cleanup_mode(DataTable, MemoryMax), Ct)
+        0 -> ?MODULE:cleanup(State, 0, Now, cleanup_mode(State), 0);
+        _ -> ?MODULE:cleanup(State, 0, Now, cleanup_mode(State), Ct)
     end;
 
 %% In normal cleanup, sleep a second between each batch before continuing our cleanup sweep
-cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr, Now, normal, 0) -> 
+cleanup(#cleanup_state{tables = #tables{meta_table = MetaTable}} = State, SlotNr, Now, normal, 0) ->
     timer:sleep(1000),
     case ets:info(MetaTable, size) of
-        0 -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, 0, Now, normal, 0);
-        _ -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr, now_sec(), cleanup_mode(DataTable, MemoryMax), ?CLEANUP_BATCH)
+        0 -> ?MODULE:cleanup(State, SlotNr, Now, normal, 0);
+        _ -> ?MODULE:cleanup(State, SlotNr, now_sec(), cleanup_mode(State), ?CLEANUP_BATCH)
     end;
 
 %% After finishing a batch in cache_full mode, check if the cache is still full, if so keep deleting entries
-cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr, Now, cache_full, 0) -> 
-    case cleanup_mode(DataTable, MemoryMax) of
-        normal     -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr, Now, normal, 0);
-        cache_full -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr, now_sec(), cache_full, ?CLEANUP_BATCH)
+cleanup(#cleanup_state{} = State, SlotNr, Now, cache_full, 0) ->
+    case cleanup_mode(State) of
+        normal     -> ?MODULE:cleanup(State, SlotNr, Now, normal, 0);
+        cache_full -> ?MODULE:cleanup(State, SlotNr, now_sec(), cache_full, ?CLEANUP_BATCH)
     end;
 
 %% Normal cleanup behaviour - check expire stamp and dependencies
-cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr, Now, normal, Ct) ->
-    Slot =  try 
+cleanup(#cleanup_state{tables = #tables{meta_table = MetaTable}} = State, SlotNr, Now, normal, Ct) ->
+    Slot =  try
                 ets:slot(MetaTable, SlotNr)
             catch
                 _M:_E -> '$end_of_table'
             end,
     case Slot of
-        '$end_of_table' -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, '$end_of_table', Now, normal, 0);
-        [] -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr+1, Now, normal, Ct-1);
+        '$end_of_table' -> ?MODULE:cleanup(State, '$end_of_table', Now, normal, 0);
+        [] -> ?MODULE:cleanup(State, SlotNr + 1, Now, normal, Ct - 1);
         Entries ->
-            lists:foreach(fun(Meta) -> flush_expired(Meta, Now, DepsTable, Pid) end, Entries),
-            ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr+1, Now, normal, Ct-1)
+            lists:foreach(fun(Meta) -> flush_expired(Meta, Now, State) end, Entries),
+            ?MODULE:cleanup(State, SlotNr + 1, Now, normal, Ct - 1)
     end;
 
 %% Full cache cleanup mode - randomly delete every 10th entry
-cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr, Now, cache_full, Ct) ->
-    Slot =  try 
+cleanup(#cleanup_state{pid = Pid, name = Name, callback = Callback, tables = #tables{meta_table = MetaTable}} = State, SlotNr, Now, cache_full, Ct) ->
+    Slot =  try
                 ets:slot(MetaTable, SlotNr)
             catch
                 _M:_E -> '$end_of_table'
             end,
     case Slot of
-        '$end_of_table' -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, '$end_of_table', Now, cache_full, 0);
-        [] -> ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr+1, Now, cache_full, Ct-1);
+        '$end_of_table' -> ?MODULE:cleanup(State, '$end_of_table', Now, cache_full, 0);
+        [] -> ?MODULE:cleanup(State, SlotNr + 1, Now, cache_full, Ct - 1);
         Entries ->
             FlushExpire = fun (Meta) ->
-                                case flush_expired(Meta, Now, DepsTable, Pid) of
+                                case flush_expired(Meta, Now, State) of
                                     ok -> {ok, Meta};
                                     flushed -> flushed
                                 end
                            end,
             RandomDelete = fun
                                 ({ok, #meta{key=Key}}) ->
-                                    case random:uniform(10) of
-                                        10 -> gen_server:cast(Pid, {flush, Key});
+                                    case rand:uniform(10) of
+                                        10 -> 
+                                            callback(eviction, Name, Callback),
+                                            gen_server:cast(Pid, {flush, Key});
                                         _  -> ok
                                     end;
                                 (flushed) -> flushed
@@ -766,12 +799,15 @@ cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr, Now, cache_full
 
             Entries1 = lists:map(FlushExpire, Entries),
             lists:foreach(RandomDelete, Entries1),
-            ?MODULE:cleanup(Pid, MetaTable, DepsTable, DataTable, MemoryMax, SlotNr+1, Now, cache_full, Ct-1)
+            ?MODULE:cleanup(State, SlotNr + 1, Now, cache_full, Ct - 1)
     end.
 
-
 %% @doc Check if an entry is expired, if so delete it
-flush_expired(#meta{key=Key, serial=Serial, expire=Expire, depend=Depend}, Now, DepsTable, Pid) ->
+flush_expired(
+    #meta{key=Key, serial=Serial, expire=Expire, depend=Depend},
+    Now,
+    #cleanup_state{pid = Pid, tables = #tables{deps_table = DepsTable}}
+) ->
     Expired = Expire < Now orelse not check_depend(Serial, Depend, DepsTable),
     case Expired of
         true  -> gen_server:cast(Pid, {flush, Key}), flushed;
@@ -784,6 +820,9 @@ flush_expired(#meta{key=Key, serial=Serial, expire=Expire, depend=Depend}, Now, 
 %% We use erts_debug:size() on the stored terms to calculate the total size of all terms stored.  This
 %% is better than counting the number of entries.  Using the process_info(Pid,memory) is not very useful as the
 %% garbage collection still needs to be done and then we delete too many entries.
+cleanup_mode(#cleanup_state{tables = #tables{data_table = DataTable}, memory_max = MemoryMax}) ->
+    cleanup_mode(DataTable, MemoryMax).
+
 cleanup_mode(DataTable, MemoryMax) ->
     Memory = ets:info(DataTable, memory),
     if 
@@ -811,4 +850,15 @@ flush_message(Msg) ->
         Msg -> flush_message(Msg)
     after 0 ->
             ok
+    end.
+
+callback(_Type, _Name, undefined) ->
+    ok;
+callback(Type, Name, {M, F, A}) ->
+    try
+        erlang:apply(M, F, [{Type, Name} | A])
+    catch
+        _:_  ->
+            %% Don't log errors because of high calling frequency.
+            nop
     end.
