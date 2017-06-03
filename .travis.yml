@@ -3,6 +3,7 @@ otp_release:
   - 19.3
   - 18.0
   - 17.4
+sudo: false
 script: make test
 jobs:
   include:
@@ -11,10 +12,7 @@ jobs:
       script: skip
       deploy:
         provider: script
-        script:
-          - wget https://raw.githubusercontent.com/zotonic/hexpub/master/hexpub.sh
-          - chmod +x hexpub.sh
-          - ./hexpub.sh
+        script: wget https://raw.githubusercontent.com/zotonic/hexpub/master/hexpub.sh && chmod +x hexpub.sh && ./hexpub.sh
         skip_cleanup: true
         on:
           tags: true
