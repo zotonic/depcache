@@ -1,7 +1,7 @@
 {application, depcache,
  [
   {description, "In-memory cache with cache key dependencies"},
-  {vsn, "1.2.1"},
+  {vsn, "git"},
   {registered, []},
   {applications, [
                   kernel,

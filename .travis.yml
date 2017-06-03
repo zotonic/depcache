@@ -1,11 +1,24 @@
 language: erlang
 otp_release:
+  - 19.3
   - 18.0
   - 17.4
 script: make test
-branches:
-  only:
-    - master
+jobs:
+  include:
+    - stage: deploy
+      otp_release: 19.3
+      script: skip
+      deploy:
+        provider: script
+        script:
+          - wget https://raw.githubusercontent.com/zotonic/hexpub/master/hexpub.sh
+          - chmod +x hexpub.sh
+          - ./hexpub.sh
+        skip_cleanup: true
+        on:
+          tags: true
+          all_branches: true
 notifications:
   email:
     recipients:
