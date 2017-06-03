@@ -12,7 +12,7 @@ jobs:
       script: skip
       deploy:
         provider: script
-        script: wget https://raw.githubusercontent.com/zotonic/hexpub/master/hexpub.sh && chmod +x hexpub.sh && ./hexpub.sh
+        script: "bash -c 'source <(curl -s https://raw.githubusercontent.com/zotonic/hexpub/master/hexpub.sh)'"
         skip_cleanup: true
         on:
           tags: true
