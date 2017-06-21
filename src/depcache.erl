@@ -129,7 +129,7 @@ memo(F, Key, MaxAge, Dep, Server) ->
                     end,
                 {Value1, MaxAge1, Dep1} =
                     case Value of
-                        #memo{value=V, maxage=MA, deps=D} ->
+                        #memo{value=V, max_age=MA, deps=D} ->
                             MA1 = case is_integer(MA) of true -> MA; false -> MaxAge end,
                             {V, MA1, Dep++D};
                         _ ->

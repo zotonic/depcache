@@ -19,6 +19,6 @@
 %% limitations under the License.
 
 %% @doc Record which depcache:memo can optionally return so that the
-%% memoization function can influence the dependencies and maxage.
--record(memo, {value, maxage, deps=[]}).
+%% memoization function can influence the dependencies and max_age.
+-record(memo, {value, max_age, deps=[]}).
 
