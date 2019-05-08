@@ -38,6 +38,12 @@
 %% internal export
 -export([cleanup/1, cleanup/5]).
 
+-ifdef(fun_stacktrace).
+-define(WITH_STACKTRACE(T, R, S), T:R -> S = erlang:get_stacktrace(),).
+-else.
+-define(WITH_STACKTRACE(T, R, S), T:R:S ->).
+-endif.
+
 -record(tables, {
     meta_table :: ets:tab(),
     deps_table :: ets:tab(),
@@ -141,9 +147,8 @@ memo(F, Key, MaxAge, Dep, Server) ->
                 end,
                 Value1
             catch
-                Class:R ->
-                    error_logger:error_msg("Error in memo ~p:~p in ~p",
-                                           [Class, R, erlang:get_stacktrace()]),
+                ?WITH_STACKTRACE(Class, R, S)
+                    error_logger:error_msg("Error in memo ~p:~p in ~p", [Class, R, S]),
                     memo_send_errors(Key, {throw, R}, Server),
                     throw(R)
             end
@@ -788,8 +793,8 @@ cleanup(#cleanup_state{pid = Pid, name = Name, callback = Callback, tables = #ta
                            end,
             RandomDelete = fun
                                 ({ok, #meta{key=Key}}) ->
-                                    case rand:uniform(10) of
-                                        10 -> 
+                                    case rand_uniform(10) of
+                                        1 ->
                                             callback(eviction, Name, Callback),
                                             gen_server:cast(Pid, {flush, Key});
                                         _  -> ok
@@ -801,6 +806,14 @@ cleanup(#cleanup_state{pid = Pid, name = Name, callback = Callback, tables = #ta
             lists:foreach(RandomDelete, Entries1),
             ?MODULE:cleanup(State, SlotNr + 1, Now, cache_full, Ct - 1)
     end.
+
+-ifdef(rand_only).
+rand_uniform(N) ->
+    rand:uniform(N).
+-else.
+rand_uniform(N) ->
+    crypto:uniform(1,N+1).
+-endif.
 
 %% @doc Check if an entry is expired, if so delete it
 flush_expired(
