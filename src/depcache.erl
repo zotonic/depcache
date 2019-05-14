@@ -44,6 +44,19 @@
 -define(WITH_STACKTRACE(T, R, S), T:R:S ->).
 -endif.
 
+-type memo_fun() :: function() | mfa() | {module(), atom()}.
+-type depcache_server() :: pid() | atom().
+-type max_age_secs() :: non_neg_integer().
+-type key() :: any().
+-type dependencies() :: list( key() ).
+
+-export_type([
+    memo_fun/0,
+    depcache_server/0,
+    key/0,
+    max_age_secs/0
+]).
+
 -record(tables, {
     meta_table :: ets:tab(),
     deps_table :: ets:tab(),
@@ -102,22 +115,25 @@ start_link(Name, Config) ->
 -define(PROCESS_DICT_THRESHOLD, 10000).
 
 
+-spec memo( memo_fun(), depcache_server() ) -> any().
+memo(Fun, Server) ->
+    memo(Fun, undefined, ?HOUR, [], Server).
 
-memo(Function, Server) ->
-    memo(Function, undefined, ?HOUR, [], Server).
+-spec memo( memo_fun(), max_age_secs() | key(), depcache_server() ) -> any().
+memo(Fun, MaxAge, Server) when is_tuple(Fun) ->
+    memo(Fun, undefined, MaxAge, [], Server);
 
-memo(Function, MaxAge, Server) when is_tuple(Function) ->
-    memo(Function, undefined, MaxAge, [], Server);
+memo(Fun, Key, Server) when is_function(Fun) ->
+    memo(Fun, Key, ?HOUR, [], Server).
 
-memo(F, Key, Server) when is_function(F) ->
-    memo(F, Key, ?HOUR, [], Server).
+-spec memo( memo_fun(), max_age_secs(), key(), depcache_server() ) -> any().
+memo(Fun, Key, MaxAge, Server) ->
+    memo(Fun, Key, MaxAge, [], Server).
 
-memo(F, Key, MaxAge, Server) ->
-    memo(F, Key, MaxAge, [], Server).
-
-memo(F, Key, MaxAge, Dep, Server) ->
+-spec memo( memo_fun(), max_age_secs(), key(), dependencies(), depcache_server() ) -> any().
+memo(Fun, Key, MaxAge, Dep, Server) ->
     Key1 = case Key of
-        undefined -> memo_key(F);
+        undefined -> memo_key(Fun);
         _ -> Key
     end,
     case ?MODULE:get_wait(Key1, Server) of
@@ -128,10 +144,10 @@ memo(F, Key, MaxAge, Dep, Server) ->
         undefined ->
             try
                 Value =
-                    case F of
+                    case Fun of
                         {M,F,A} -> erlang:apply(M,F,A);
                         {M,F} -> M:F();
-                        F when is_function(F) -> F()
+                        _ when is_function(Fun) -> Fun()
                     end,
                 {Value1, MaxAge1, Dep1} =
                     case Value of
@@ -173,27 +189,27 @@ memo_send_errors(Key, Exception, Server) ->
     [ catch gen_server:reply(Pid, Exception) || Pid <- Pids ].
 
 
-%% @spec set(Key, Data, Server) -> void()
 %% @doc Add the key to the depcache, hold it for 3600 seconds and no dependencies
+-spec set( key(), any(), depcache_server() ) -> ok.
 set(Key, Data, Server) ->
     set(Key, Data, 3600, [], Server).
 
-%% @spec set(Key, Data, MaxAge, Server) -> void()
 %% @doc Add the key to the depcache, hold it for MaxAge seconds and no dependencies
+-spec set( key(), any(), max_age_secs(), depcache_server() ) -> ok.
 set(Key, Data, MaxAge, Server) ->
     set(Key, Data, MaxAge, [], Server).
 
-%% @spec set(Key, Data, MaxAge, Depend, Server) -> void()
 %% @doc Add the key to the depcache, hold it for MaxAge seconds and check the dependencies
+-spec set( key(), any(), max_age_secs(), dependencies(), depcache_server() ) -> ok.
 set(Key, Data, MaxAge, Depend, Server) ->
     flush_process_dict(),
     gen_server:call(Server, {set, Key, Data, MaxAge, Depend}).
 
 
-%% @spec get_wait(Key, Server) -> {ok, Data} | undefined
 %% @doc Fetch the key from the cache, when the key does not exist then lock the entry and let 
 %% the calling process insert the value. All other processes requesting the key will wait till
 %% the key is updated and receive the key's new value.
+-spec get_wait( key(), depcache_server() ) -> {ok, any()} | undefined.
 get_wait(Key, Server) ->
     case get_process_dict(Key, Server) of
         NoValue when NoValue =:= undefined orelse NoValue =:= depcache_disabled ->
@@ -203,16 +219,16 @@ get_wait(Key, Server) ->
     end.
 
 
-%% @spec get_waiting_pids(Key, Server) -> {ok, Pids} | undefined
 %% @doc Fetch the queue of pids that are waiting for a get_wait/1. This flushes the queue and
 %% the key from the depcache.
+-spec get_waiting_pids( key(), depcache_server() ) -> {ok, list( pid() )} | undefined.
 get_waiting_pids(Key, Server) ->
     gen_server:call(Server, {get_waiting_pids, Key}, ?MAX_GET_WAIT*1000).
 
 
 
-%% @spec get(Key, Server) -> {ok, Data} | undefined
 %% @doc Fetch the key from the cache, return the data or an undefined if not found (or not valid)
+-spec get( key(), depcache_server() ) -> {ok, any()} | undefined.
 get(Key, Server) ->
     case get_process_dict(Key, Server) of
         depcache_disabled -> gen_server:call(Server, {get, Key});
@@ -220,8 +236,8 @@ get(Key, Server) ->
     end.
 
 
-%% @spec get_subkey(Key, SubKey, Server) -> {ok, Data} | undefined
 %% @doc Fetch the key from the cache, return the data or an undefined if not found (or not valid)
+-spec get_subkey( key(), key(), depcache_server() ) -> {ok, any()} | undefined.
 get_subkey(Key, SubKey, Server) ->
     case in_process_server(Server) of
         true ->
@@ -238,8 +254,8 @@ get_subkey(Key, SubKey, Server) ->
     end.
 
 
-%% @spec get(Key, SubKey, Server) -> {ok, Data} | undefined
 %% @doc Fetch the key from the cache, return the data or an undefined if not found (or not valid)
+-spec get( key(), key(), depcache_server() ) -> {ok, any()} | undefined.
 get(Key, SubKey, Server) ->
     case get_process_dict(Key, Server) of
         undefined -> 
@@ -251,22 +267,22 @@ get(Key, SubKey, Server) ->
     end.
 
 
-%% @spec flush(Key, #context{}) -> void()
 %% @doc Flush the key and all keys depending on the key
+-spec flush( key(), depcache_server() ) -> ok.
 flush(Key, Server) ->
     gen_server:call(Server, {flush, Key}),
     flush_process_dict().
 
 
-%% @spec flush(#context{}) -> void()
 %% @doc Flush all keys from the caches
+-spec flush( depcache_server() ) -> ok.
 flush(Server) ->
     gen_server:call(Server, flush),
     flush_process_dict().
 
 
-%% @spec size(#context{}) -> int()
 %% @doc Return the total memory size of all stored terms
+-spec size( depcache_server() ) -> non_neg_integer().
 size(Server) ->
     {_Meta, _Deps, Data} = get_tables(Server),
     ets:info(Data, memory).
@@ -337,7 +353,8 @@ get_ets(Key, Server) ->
     end.
 
 
-%% @doc Check if we use a local process dict cache
+%% @doc Check if we use a local process dict cache.
+-spec in_process_server( depcache_server() ) -> boolean().
 in_process_server(Server) ->
     case erlang:get(depcache_in_process) =:= true of
         true ->
@@ -349,6 +366,7 @@ in_process_server(Server) ->
 
 
 %% @doc Enable or disable the in-process caching using the process dictionary
+-spec in_process( boolean() ) -> ok.
 in_process(true) ->
     erlang:put(depcache_in_process, true);
 in_process(false) ->
