@@ -1,26 +1,17 @@
 language: erlang
-otp_release:
-  - 21.1
-  - 20.2
-  - 19.3
-  - 18.0
-  - 17.4
+matrix:
+    include:
+      - otp_release: 21.3
+      - otp_release: 20.3
+      - otp_release: 19.3
+      - otp_release: 18.3
+        dist: trusty
+      - otp_release: 17.4
+        dist: trusty
 sudo: false
 script:
   - make test
   - make xref
-jobs:
-  include:
-    - stage: deploy
-      otp_release: 19.3
-      script: skip
-      deploy:
-        provider: script
-        script: "bash -c 'source <(curl -s https://raw.githubusercontent.com/zotonic/hexpub/master/hexpub.sh)'"
-        skip_cleanup: true
-        on:
-          tags: true
-          all_branches: true
 notifications:
   email:
     recipients:
