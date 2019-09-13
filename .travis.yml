@@ -12,18 +12,6 @@ sudo: false
 script:
   - make test
   - make xref
-jobs:
-  include:
-    - stage: deploy
-      otp_release: 19.3
-      script: skip
-      deploy:
-        provider: script
-        script: "bash -c 'source <(curl -s https://raw.githubusercontent.com/zotonic/hexpub/master/hexpub.sh)'"
-        skip_cleanup: true
-        on:
-          tags: true
-          all_branches: true
 notifications:
   email:
     recipients:
