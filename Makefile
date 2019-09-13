@@ -11,6 +11,9 @@ compile: $(REBAR)
 test: compile
 	$(REBAR) eunit
 
+xref: compile
+	$(REBAR) xref
+
 clean:
 	$(REBAR) clean
 

@@ -830,7 +830,7 @@ rand_uniform(N) ->
     rand:uniform(N).
 -else.
 rand_uniform(N) ->
-    crypto:uniform(1,N+1).
+    crypto:rand_uniform(1,N+1).
 -endif.
 
 %% @doc Check if an entry is expired, if so delete it

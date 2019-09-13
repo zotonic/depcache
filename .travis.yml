@@ -6,7 +6,9 @@ otp_release:
   - 18.0
   - 17.4
 sudo: false
-script: make test
+script:
+  - make test
+  - make xref
 jobs:
   include:
     - stage: deploy
