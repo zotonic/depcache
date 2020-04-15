@@ -89,6 +89,13 @@ increase(X) ->
     erlang:put(X, I),
     I.
 
+map_test() ->
+    {ok, C} = depcache:start_link([]),
+    ?assertEqual(undefined, depcache:get(a, b, C)),
+    depcache:set(a, #{ b => 1 }, C),
+    ?assertEqual({ok, 1}, depcache:get(a, b, C)),
+    ok.
+
 
 memo_test() ->
     {ok, C} = depcache:start_link([]),

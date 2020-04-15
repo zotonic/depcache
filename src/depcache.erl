@@ -677,13 +677,18 @@ check_depend(Serial, Depend, DepsTable) ->
 
 
 
-% Index of list with an integer like "a[2]"
+%% Map lookup
+find_value(Key, M) when is_map(M) ->
+    maps:get(Key, M, undefined);
+
+%% Index of list with an integer like "a[2]"
 find_value(Key, L) when is_integer(Key) andalso is_list(L) ->
     try
         lists:nth(Key, L)
     catch
         _:_ -> undefined
     end;
+
 find_value(Key, {GBSize, GBData}) when is_integer(GBSize) ->
     case gb_trees:lookup(Key, {GBSize, GBData}) of
         {value, Val} ->
