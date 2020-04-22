@@ -126,11 +126,11 @@ memo(Fun, MaxAge, Server) when is_tuple(Fun) ->
 memo(Fun, Key, Server) when is_function(Fun) ->
     memo(Fun, Key, ?HOUR, [], Server).
 
--spec memo( memo_fun(), max_age_secs(), key(), depcache_server() ) -> any().
+-spec memo( memo_fun(), key(), max_age_secs(), depcache_server() ) -> any().
 memo(Fun, Key, MaxAge, Server) ->
     memo(Fun, Key, MaxAge, [], Server).
 
--spec memo( memo_fun(), max_age_secs(), key(), dependencies(), depcache_server() ) -> any().
+-spec memo( memo_fun(), key(), max_age_secs(), dependencies(), depcache_server() ) -> any().
 memo(Fun, Key, MaxAge, Dep, Server) ->
     Key1 = case Key of
         undefined -> memo_key(Fun);
