@@ -356,24 +356,26 @@ get_ets(Key, Server) ->
 %% @doc Check if we use a local process dict cache.
 -spec in_process_server( depcache_server() ) -> boolean().
 in_process_server(Server) ->
-    case erlang:get(depcache_in_process) =:= true of
+    case erlang:get(depcache_in_process) of
         true ->
             _ = get_tables(Server),
             true;
-        false ->
+        _ ->
             false
     end.
 
 
 %% @doc Enable or disable the in-process caching using the process dictionary
--spec in_process( boolean() ) -> ok.
+-spec in_process( undefined | boolean() ) -> undefined | boolean().
 in_process(true) ->
     erlang:put(depcache_in_process, true);
 in_process(false) ->
-    erlang:erase(depache_in_process),
-    flush_process_dict();
+    Old = erlang:erase(depache_in_process),
+    flush_process_dict(),
+    Old;
 in_process(undefined) ->
     in_process(false).
+
 
 %% @doc Flush all items memoized in the process dictionary.
 flush_process_dict() ->
