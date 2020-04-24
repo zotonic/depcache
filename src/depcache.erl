@@ -1,9 +1,9 @@
 %% @author Marc Worrell <marc@worrell.nl>
-%% @copyright 2009-2016 Marc Worrell, Arjan Scherpenisse
+%% @copyright 2009-2020 Marc Worrell, Arjan Scherpenisse
 %%
 %% @doc In-memory caching server with dependency checks and local in process memoization of lookups.
 
-%% Copyright 2009-2016 Marc Worrell, Arjan Scherpenisse
+%% Copyright 2009-2020 Marc Worrell, Arjan Scherpenisse
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -115,21 +115,27 @@ start_link(Name, Config) ->
 -define(PROCESS_DICT_THRESHOLD, 10000).
 
 
+%% @doc Cache the result of the function for an hour.
 -spec memo( memo_fun(), depcache_server() ) -> any().
 memo(Fun, Server) ->
     memo(Fun, undefined, ?HOUR, [], Server).
 
+%% @doc If Fun is a function then cache for an hour given the key. If
+%%      Fun is a {M,F,A} tuple then derive the key from the tuple and
+%%      cache for MaxAge seconds.
 -spec memo( memo_fun(), max_age_secs() | key(), depcache_server() ) -> any().
 memo(Fun, MaxAge, Server) when is_tuple(Fun) ->
     memo(Fun, undefined, MaxAge, [], Server);
-
 memo(Fun, Key, Server) when is_function(Fun) ->
     memo(Fun, Key, ?HOUR, [], Server).
 
+%% @doc Cache the result of the function as Key for MaxAge seconds.
 -spec memo( memo_fun(), key(), max_age_secs(), depcache_server() ) -> any().
 memo(Fun, Key, MaxAge, Server) ->
     memo(Fun, Key, MaxAge, [], Server).
 
+%% @doc Cache the result of the function as Key for MaxAge seconds, flush
+%%      the cached result if any of the dependencies is changed.
 -spec memo( memo_fun(), key(), max_age_secs(), dependencies(), depcache_server() ) -> any().
 memo(Fun, Key, MaxAge, Dep, Server) ->
     Key1 = case Key of

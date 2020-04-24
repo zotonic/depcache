@@ -14,6 +14,9 @@ test: compile
 xref: compile
 	$(REBAR) xref
 
+edoc:
+	$(REBAR) edoc
+
 clean:
 	$(REBAR) clean
 

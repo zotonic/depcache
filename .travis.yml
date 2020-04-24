@@ -12,6 +12,7 @@ sudo: false
 script:
   - make test
   - make xref
+  - make edoc
 notifications:
   email:
     recipients:
