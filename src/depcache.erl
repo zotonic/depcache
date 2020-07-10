@@ -170,9 +170,8 @@ memo(Fun, Key, MaxAge, Dep, Server) ->
                 Value1
             catch
                 ?WITH_STACKTRACE(Class, R, S)
-                    error_logger:error_msg("Error in memo ~p:~p in ~p", [Class, R, S]),
                     memo_send_errors(Key, {throw, R}, Server),
-                    throw(R)
+                    erlang:raise(Class, R, S)
             end
     end.
 
