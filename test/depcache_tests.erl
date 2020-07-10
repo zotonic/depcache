@@ -5,6 +5,12 @@
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("depcache/include/depcache.hrl").
 
+-ifdef(fun_stacktrace).
+-define(WITH_STACKTRACE(T, R, S), T:R -> S = erlang:get_stacktrace(),).
+-else.
+-define(WITH_STACKTRACE(T, R, S), T:R:S ->).
+-endif.
+
 %% simple_test() ->
 %% 	C = z_context:new(testsandbox),
 %% 	depcache:flush(test_m_key, C),
@@ -103,7 +109,7 @@ memo_test() ->
     IncreaserFun = fun() ->
                            increase(x)
                    end,
-    
+
     ?assertEqual(1, depcache:memo(IncreaserFun, test_key, C)), % uncached
     ?assertEqual(1, depcache:memo(IncreaserFun, test_key, C)), % cached (no increase)
     depcache:flush(test_key, C),
@@ -111,15 +117,31 @@ memo_test() ->
     ?assertEqual(2, depcache:memo(IncreaserFun, test_key, C)). % cached again
 
 
-
 memo_record_test() ->
     {ok, C} = depcache:start_link([]),
 
     Fun = fun() -> V = increase(y), #memo{value=V, deps=[dep]} end,
-    
+
     ?assertEqual(1, depcache:memo(Fun, test_key1, C)), % uncached
     ?assertEqual(1, depcache:memo(Fun, test_key1, C)), % cached (no increase)
     depcache:flush(dep, C), %% flush the dep
     ?assertEqual(2, depcache:memo(Fun, test_key1, C)), % uncached again
     ?assertEqual(2, depcache:memo(Fun, test_key1, C)). % cached again
 
+
+raise_error() ->
+    erlang:error(some_error).
+
+memo_raise_test() ->
+    {ok, C} = depcache:start_link([]),
+
+    Fun = fun() -> raise_error() end,
+    try
+        depcache:memo(Fun, test_key1, C)
+    catch
+        ?WITH_STACKTRACE(Class, R, S)
+        ?assertEqual(error, Class),
+        ?assertEqual(some_error, R),
+        ?assertMatch({depcache_tests, raise_error, 0, _}, hd(S))
+    end,
+    ok.
