@@ -1,4 +1,4 @@
-%% @author Marc Worrell <marc@worrell.nl>
+%% @author Arjan Scherpenisse
 %% @copyright 2009-2020 Marc Worrell, Arjan Scherpenisse
 %%
 %% @doc In-memory caching server with dependency checks and local in process memoization of lookups.
@@ -72,7 +72,7 @@
     tables :: #tables{},
     name :: atom(),
     memory_max :: non_neg_integer(),
-    callback :: mfa()
+    callback :: mfa() | undefined
 }).
 
 %% @doc Start a depcache process.
@@ -214,7 +214,7 @@ set(Key, Data, MaxAge, Depend, Server) ->
 %% @doc Fetch the key from the cache, when the key does not exist then lock the entry and let 
 %% the calling process insert the value. All other processes requesting the key will wait till
 %% the key is updated and receive the key's new value.
--spec get_wait( key(), depcache_server() ) -> {ok, any()} | undefined.
+-spec get_wait( key(), depcache_server() ) -> {ok, any()} | undefined | {throw, term()}.
 get_wait(Key, Server) ->
     case get_process_dict(Key, Server) of
         NoValue when NoValue =:= undefined orelse NoValue =:= depcache_disabled ->
@@ -226,10 +226,9 @@ get_wait(Key, Server) ->
 
 %% @doc Fetch the queue of pids that are waiting for a get_wait/1. This flushes the queue and
 %% the key from the depcache.
--spec get_waiting_pids( key(), depcache_server() ) -> {ok, list( pid() )} | undefined.
+-spec get_waiting_pids( key(), depcache_server() ) -> list( {pid(), Tag :: term()} ).
 get_waiting_pids(Key, Server) ->
     gen_server:call(Server, {get_waiting_pids, Key}, ?MAX_GET_WAIT*1000).
-
 
 
 %% @doc Fetch the key from the cache, return the data or an undefined if not found (or not valid)
@@ -538,9 +537,9 @@ handle_call({set, Key, Data, MaxAge, Depend}, _From, #state{tables = Tables} = S
     %% Check if other processes are waiting for this key, send them the data
     case dict:find(Key, State1#state.wait_pids) of
         {ok, {_MaxAge, List}} ->
-            [ catch gen_server:reply(Pid, {ok, Data}) || Pid <- List ],
-            WaitPids = dict:erase(Key, State1#state.wait_pids),
-            {reply, ok, State1#state{wait_pids=WaitPids}};
+            [ catch gen_server:reply(From, {ok, Data}) || From <- List ],
+            WaitFroms = dict:erase(Key, State1#state.wait_pids),
+            {reply, ok, State1#state{wait_pids=WaitFroms}};
         error ->
             {reply, ok, State1}
     end;
@@ -687,15 +686,13 @@ check_depend(Serial, Depend, DepsTable) ->
 %% Map lookup
 find_value(Key, M) when is_map(M) ->
     maps:get(Key, M, undefined);
-
-%% Index of list with an integer like "a[2]"
 find_value(Key, L) when is_integer(Key) andalso is_list(L) ->
+    %% Index of list with an integer like "a[2]"
     try
         lists:nth(Key, L)
     catch
         _:_ -> undefined
     end;
-
 find_value(Key, {GBSize, GBData}) when is_integer(GBSize) ->
     case gb_trees:lookup(Key, {GBSize, GBData}) of
         {value, Val} ->
@@ -703,13 +700,11 @@ find_value(Key, {GBSize, GBData}) when is_integer(GBSize) ->
         _ ->
             undefined
     end;
-
-%% Regular proplist lookup
 find_value(Key, L) when is_list(L) ->
+    %% Regular proplist lookup
     proplists:get_value(Key, L);
-
-%% Resource list handling, special lookups when skipping the index
 find_value(Key, {rsc_list, L}) when is_integer(Key) ->
+    %% Resource list handling, special lookups when skipping the index
     try
         lists:nth(Key, L)
     catch
@@ -719,43 +714,33 @@ find_value(Key, {rsc_list, [H|_T]}) ->
     find_value(Key, H);
 find_value(_Key, {rsc_list, []}) ->
     undefined;
-
-% Index of tuple with an integer like "a[2]"
 find_value(Key, T) when is_integer(Key) andalso is_tuple(T) ->
+    % Index of tuple with an integer like "a[2]"
     try
         element(Key, T)
-    catch 
+    catch
         _:_ -> undefined
     end;
-
-%% Other cases: context, dict or parametrized module lookup.
 find_value(Key, Tuple) when is_tuple(Tuple) ->
+    %% Other cases: context or dict lookup.
     Module = element(1, Tuple),
     case Module of
-        dict -> 
+        dict ->
             case dict:find(Key, Tuple) of
                 {ok, Val} ->
                     Val;
                 _ ->
                     undefined
             end;
-        Module ->
+        Module when is_atom(Key) ->
             Exports = Module:module_info(exports),
             case proplists:get_value(Key, Exports) of
-                1 ->
-                    Tuple:Key();
-                _ ->
-                    case proplists:get_value(get, Exports) of
-                        1 -> 
-                            Tuple:get(Key);
-                        _ ->
-                            undefined
-                    end
+                1 -> Module:Key();
+                _ -> undefined
             end
     end;
-
-%% Any subvalue of a non-existant value is empty
 find_value(_Key, _Data) ->
+    %% Any subvalue of a non-existant value is empty
     undefined.
 
 
@@ -897,11 +882,13 @@ flush_message(Msg) ->
 
 callback(_Type, _Name, undefined) ->
     ok;
-callback(Type, Name, {M, F, A}) ->
+callback(Type, Name, {M, F, A}) when is_list(A) ->
     try
         erlang:apply(M, F, [{Type, Name} | A])
     catch
         _:_  ->
             %% Don't log errors because of high calling frequency.
             nop
-    end.
+    end;
+callback(Type, Name, {M, F, A}) ->
+    callback(Type, Name, {M, F, [A]}).
