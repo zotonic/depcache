@@ -16,7 +16,7 @@ Usage
 
 Start a depcache server like this:
 
-    {ok, Server} = depcache:start_link([])
+    {ok, Server} = depcache:start_link([]).
 
 Now you can get and set values using the returned `Server` pid.
 
