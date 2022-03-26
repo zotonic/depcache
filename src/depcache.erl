@@ -197,7 +197,7 @@ memo_send_errors(Key, Exception, Server) ->
 %% @doc Add the key to the depcache, hold it for 3600 seconds and no dependencies
 -spec set( key(), any(), depcache_server() ) -> ok.
 set(Key, Data, Server) ->
-    set(Key, Data, 3600, [], Server).
+    set(Key, Data, ?HOUR, [], Server).
 
 %% @doc Add the key to the depcache, hold it for MaxAge seconds and no dependencies
 -spec set( key(), any(), max_age_secs(), depcache_server() ) -> ok.
