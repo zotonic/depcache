@@ -79,7 +79,7 @@ get_set_depend_test() ->
 
     ?assertEqual(undefined, depcache:get(test_key, C)),
 
-    %% Set a key  and hold it for ten seconds.
+    %% Set a key  and hold it for one second.
     depcache:set(test_key, 123, 10, [test_key_dep], C),
     ?assertEqual({ok,123}, depcache:get(test_key, C)),
 
