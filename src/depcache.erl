@@ -177,13 +177,10 @@ memo(Fun, Server) ->
 %% @param Key a cache item key
 %% @returns cached value
 
--spec memo( Fun, MaxAge, Server ) -> Result when
+-spec memo( Fun, MaxAge_Key, Server ) -> Result when
     Fun :: memo_fun(),
+	MaxAge_Key :: MaxAge | Key,
 	MaxAge :: max_age_secs(),
-	Server :: depcache_server(),
-	Result :: any();
-( Fun, Key, Server ) -> Result when
-    Fun :: memo_fun(),
 	Key :: key(),
 	Server :: depcache_server(),
 	Result :: any().
@@ -559,7 +556,7 @@ get_tables1(Server) when is_atom(Server) ->
 -spec get_process_dict(Key, Server ) -> Result when
 	Key :: key(),
 	Server :: depcache_server(),
-	Result :: tuple().
+	Result :: tuple() | depcache_disabled | undefined.
 get_process_dict(Key, Server) ->
     case in_process_server(Server) of
         true ->
@@ -797,16 +794,9 @@ handle_call(flush, _From, State) ->
 %% @doc Handling cast messages
 
 -spec handle_cast(Request, State) -> Result when 
-	Request :: {flush, Key},
+	Request :: {flush, Key} | flush | any(),
 	Key :: key(),
 	State :: state(),
-	Result :: {noreply, State};
-(Request, State) -> Result when
-	Request :: flush,
-	State :: state(),
-	Result :: {noreply, State};
-(Request, State) -> Result when
-	Request :: any(),
 	Result :: {noreply, State}.
 	
 handle_cast({flush, Key}, State) ->
@@ -829,11 +819,7 @@ handle_cast(_Msg, State) ->
 %% @see gen_server:handle_info/2
 
 -spec handle_info(Info, State) -> Result when 
-	Info :: tick,
-	State :: state(),
-	Result :: {noreply, State};
-(Info, State) -> Result when 
-	Info :: any(),
+	Info :: tick | any(),
 	State :: state(),
 	Result :: {noreply, State}.
 	
@@ -1224,42 +1210,12 @@ check_depend(Serial, Depend, DepsTable) ->
 %% @private
 %% @doc Search by value in some set of data.
 
--spec find_value(Key, Map) -> Result when
-	Key :: key(), 
-	Map :: map(),
-	Result :: undefined | any();
-(Key, List) -> Result when
-	Key :: integer(), 
-	List :: list(),
-	Result :: undefined | any();
-(Key, Tree) -> Result when
-	Key :: key(),
-	Tree :: gb_trees:tree(),
-	Result :: undefined | any();
-(Key, {rsc_list, List}) -> Result when	
-	Key :: integer(),
-	List :: proplist(),
-	Result :: any();
-(Key, {rsc_list, List}) -> Result when	
-	Key :: integer(),
-	List :: list(),
-	Result :: undefined | any();
-(Key, {rsc_list, List}) -> Result when	
-	Key :: key(),
-	List :: list(),
-	Result :: undefined | any();
-(Key, Tuple) -> Result when	
-	Key :: integer(),
-	Tuple :: tuple(),
-	Result :: undefined | any();
-(Key, Tuple) -> Result when	
-	Key :: key(),
-	Tuple :: tuple(),
-	Result :: undefined | any();
-(Key, Data) -> Result when	
-	Key :: key(),
-	Data :: any(),
-	Result :: any().
+-spec find_value(Key, Data) -> Result when
+	Key :: key() | integer(),
+	Data :: map() | List | Rsc_list | tuple() | any(),
+	List :: list() | proplist(),
+	Rsc_list :: {rsc_list, List},
+	Result :: undefined | any().
 find_value(Key, M) when is_map(M) ->
     maps:get(Key, M, undefined);
 find_value(Key, L) when is_integer(Key) andalso is_list(L) ->
@@ -1270,7 +1226,8 @@ find_value(Key, L) when is_integer(Key) andalso is_list(L) ->
         _:_ -> undefined
     end;
 find_value(Key, {GBSize, GBData}) when is_integer(GBSize) ->
-    case gb_trees:lookup(Key, {GBSize, GBData}) of
+	Tree = gb_trees:from_orddict([{GBSize, GBData}]),
+	case gb_trees:lookup(Key, Tree) of
         {value, Val} ->
             Val;
         _ ->
@@ -1302,7 +1259,9 @@ find_value(Key, Tuple) when is_tuple(Tuple) ->
     Module = element(1, Tuple),
     case Module of
         dict ->
-            case dict:find(Key, Tuple) of
+			{Key, Value} = Tuple,
+			Dict = dict:append(Key, Value, dict:new()),
+            case dict:find(Key, Dict) of
                 {ok, Val} ->
                     Val;
                 _ ->
@@ -1342,34 +1301,6 @@ cleanup(#cleanup_state{} = State) ->
 	SlotNr :: '$end_of_table' | non_neg_integer(), 
 	Now :: sec(), 
 	Mode :: normal | cache_full, 
-	Ct :: integer(),
-	Result :: no_return();
-(State, SlotNr, Now, Mode, Ct) ->	Result when
-	State :: cleanup_state(),
-	SlotNr :: '$end_of_table' | non_neg_integer(), 
-	Now :: sec(),
-	Mode :: normal,
-	Ct :: 0,
-	Result :: no_return();
-(State, SlotNr, Now, Mode, Ct) ->	Result when
-	State :: cleanup_state(),
-	SlotNr :: '$end_of_table' | non_neg_integer(), 
-	Now :: sec(),
-	Mode :: cache_full,
-	Ct :: 0,
-	Result :: no_return();
-(State, SlotNr, Now, Mode, Ct) ->	Result when
-	State :: cleanup_state(),
-	SlotNr :: '$end_of_table' | non_neg_integer(), 
-	Now :: sec(),
-	Mode :: normal,
-	Ct :: integer(),
-	Result :: no_return();
-(State, SlotNr, Now, Mode, Ct) ->	Result when
-	State :: cleanup_state(),
-	SlotNr :: '$end_of_table' | non_neg_integer(), 
-	Now :: sec(),
-	Mode :: cache_full,
 	Ct :: integer(),
 	Result :: no_return().
 cleanup(#cleanup_state{tables = #tables{meta_table = MetaTable}} = State, '$end_of_table', Now, _Mode, Ct) ->
