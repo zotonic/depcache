@@ -1259,8 +1259,8 @@ find_value(Key, Tuple) when is_tuple(Tuple) ->
     Module = element(1, Tuple),
     case Module of
         dict ->
-			{Key, Value} = Tuple,
-			Dict = dict:append(Key, Value, dict:new()),
+			{Key1, Value} = Tuple,
+			Dict = dict:append(Key1, Value, dict:new()),
             case dict:find(Key, Dict) of
                 {ok, Val} ->
                     Val;
