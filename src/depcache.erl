@@ -109,7 +109,7 @@
 
 -spec start_link(Config) -> Result when 
     Config :: proplist(),
-	Result :: {ok, pid()} | ignore | {error, term()}.
+    Result :: {ok, pid()} | ignore | {error, term()}.
 start_link(Config) ->
     gen_server:start_link(?MODULE, Config, []).
 
@@ -127,9 +127,9 @@ start_link(Config) ->
 %% @returns Result of starting gen_server item.
 
 -spec start_link(Name, Config) -> Result when 
-    Name :: atom(),
-	Config :: proplist(),
-	Result :: {ok, pid()} | ignore | {error, term()}.
+    Name :: atom(), 
+    Config :: proplist(),
+    Result :: {ok, pid()} | ignore | {error, term()}.
 start_link(Name, Config) ->
     gen_server:start_link({local, Name}, ?MODULE, [{name,Name}|Config], []).
 
@@ -162,8 +162,8 @@ start_link(Name, Config) ->
 
 -spec memo( Fun, Server ) -> Result when 
     Fun :: memo_fun(),
-	Server :: depcache_server(),
-	Result :: any().
+    Server :: depcache_server(),
+    Result :: any().
 memo(Fun, Server) ->
     memo(Fun, undefined, ?HOUR, [], Server).
 
@@ -179,11 +179,11 @@ memo(Fun, Server) ->
 
 -spec memo( Fun, MaxAge_Key, Server ) -> Result when
     Fun :: memo_fun(),
-	MaxAge_Key :: MaxAge | Key,
-	MaxAge :: max_age_secs(),
-	Key :: key(),
-	Server :: depcache_server(),
-	Result :: any().
+    MaxAge_Key :: MaxAge | Key,
+    MaxAge :: max_age_secs(),
+    Key :: key(),
+    Server :: depcache_server(),
+    Result :: any().
 memo(Fun, MaxAge, Server) when is_tuple(Fun) ->
     memo(Fun, undefined, MaxAge, [], Server);
 memo(Fun, Key, Server) when is_function(Fun) ->
@@ -196,10 +196,10 @@ memo(Fun, Key, Server) when is_function(Fun) ->
 
 -spec memo( Fun, Key, MaxAge, Server ) -> Result when 
     Fun :: memo_fun(),
-	Key :: key(),
-	MaxAge :: max_age_secs(),
-	Server :: depcache_server(),
-	Result :: any().
+    Key :: key(),
+    MaxAge :: max_age_secs(),
+    Server :: depcache_server(),
+    Result :: any().
 memo(Fun, Key, MaxAge, Server) ->
     memo(Fun, Key, MaxAge, [], Server).
 
@@ -210,11 +210,11 @@ memo(Fun, Key, MaxAge, Server) ->
 
 -spec memo( Fun, Key, MaxAge, Dep, Server ) -> Result when
     Fun :: memo_fun(),
-	Key :: undefined | key(),
-	MaxAge :: max_age_secs(),
-	Dep :: dependencies(),
-	Server :: depcache_server(),
-	Result :: any().
+    Key :: undefined | key(),
+    MaxAge :: max_age_secs(),
+    Dep :: dependencies(),
+    Server :: depcache_server(),
+    Result :: any().
 memo(Fun, Key, MaxAge, Dep, Server) ->
     Key1 = case Key of
         undefined -> memo_key(Fun);
@@ -237,11 +237,11 @@ memo(Fun, Key, MaxAge, Dep, Server) ->
 
 -spec memo_key( Fun, Key, MaxAge, Dep, Server ) -> Result when
     Fun :: memo_fun(),
-	Key :: key(),
-	MaxAge :: max_age_secs(),
-	Dep :: dependencies(),
-	Server :: depcache_server(),
-	Result :: any().
+    Key :: key(),
+    MaxAge :: max_age_secs(),
+    Dep :: dependencies(),
+    Server :: depcache_server(),
+    Result :: any().
 memo_key(Fun, Key, MaxAge, Dep, Server) ->
 	try
 		Value =
@@ -319,9 +319,9 @@ memo_send_replies(Key, Value, Server) ->
 
 -spec memo_send_errors( Key, Exception, Server ) -> Result when
     Key :: key(),
-	Exception :: {throw, any()},
-	Server :: depcache_server(),
-	Result :: list().
+    Exception :: {throw, any()},
+    Server :: depcache_server(),
+    Result :: list().
 memo_send_errors(Key, Exception, Server) ->
     Pids = get_waiting_pids(Key, Server),
     [ catch gen_server:reply(Pid, Exception) || Pid <- Pids ].
@@ -332,9 +332,9 @@ memo_send_errors(Key, Exception, Server) ->
 
 -spec set( Key, Data, Server ) -> Result when
     Key :: key(),
-	Data :: any(),
-	Server :: depcache_server(),
-	Result :: ok.
+    Data :: any(),
+    Server :: depcache_server(),
+    Result :: ok.
 
 set(Key, Data, Server) ->
     set(Key, Data, ?HOUR, [], Server).
@@ -345,10 +345,10 @@ set(Key, Data, Server) ->
 
 -spec set( Key, Data, MaxAge, Server ) -> Result when
     Key :: key(),
-	Data :: any(),
-	MaxAge :: max_age_secs(),
-	Server :: depcache_server(),
-	Result :: ok.
+    Data :: any(),
+    MaxAge :: max_age_secs(),
+    Server :: depcache_server(),
+    Result :: ok.
 set(Key, Data, MaxAge, Server) ->
     set(Key, Data, MaxAge, [], Server).
 
@@ -363,11 +363,11 @@ set(Key, Data, MaxAge, Server) ->
 
 -spec set( Key, Data, MaxAge, Depend, Server ) -> Result when
     Key :: key(),
-	Data :: any(),
-	MaxAge :: max_age_secs(),
-	Depend :: dependencies(),
-	Server :: depcache_server(),
-	Result :: ok.
+    Data :: any(),
+    MaxAge :: max_age_secs(),
+    Depend :: dependencies(),
+    Server :: depcache_server(),
+    Result :: ok.
 set(Key, Data, MaxAge, Depend, Server) ->
 	flush_process_dict(),
     gen_server:call(Server, {set, Key, Data, MaxAge, Depend}).
@@ -383,8 +383,8 @@ set(Key, Data, MaxAge, Depend, Server) ->
 
 -spec get_wait( Key, Server ) -> Result when
     Key :: key(),
-	Server :: depcache_server(),
-	Result :: {ok, any()} | undefined | {throw, term()}.
+    Server :: depcache_server(),
+    Result :: {ok, any()} | undefined | {throw, term()}.
 get_wait(Key, Server) ->
     case get_process_dict(Key, Server) of
         NoValue when NoValue =:= undefined orelse NoValue =:= depcache_disabled ->
@@ -405,9 +405,9 @@ get_wait(Key, Server) ->
 
 -spec get_waiting_pids( Key, Server ) -> Result when
     Key :: key(),
-	Server :: depcache_server(),
-	Result :: [{pid(), Tag}],
-	Tag :: atom().
+    Server :: depcache_server(),
+    Result :: [{pid(), Tag}],
+    Tag :: atom().
 	
 get_waiting_pids(Key, Server) ->
     gen_server:call(Server, {get_waiting_pids, Key}, ?MAX_GET_WAIT*1000).
@@ -421,8 +421,8 @@ get_waiting_pids(Key, Server) ->
 
 -spec get( Key, Server ) -> Result when
     Key :: key(),
-	Server :: depcache_server(),
-	Result :: {ok, any()} | undefined.
+    Server :: depcache_server(),
+    Result :: {ok, any()} | undefined.
 get(Key, Server) ->
     case get_process_dict(Key, Server) of
         depcache_disabled -> gen_server:call(Server, {get, Key});
@@ -438,9 +438,9 @@ get(Key, Server) ->
 
 -spec get_subkey( Key, SubKey, Server ) -> Result when
     Key :: key(),
-	SubKey :: key(),
-	Server :: depcache_server(),
-	Result :: {ok, any()} | undefined.
+    SubKey :: key(),
+    Server :: depcache_server(),
+    Result :: {ok, any()} | undefined.
 get_subkey(Key, SubKey, Server) ->
     case in_process_server(Server) of
         true ->
@@ -465,9 +465,9 @@ get_subkey(Key, SubKey, Server) ->
 
 -spec get( Key, SubKey, Server ) -> Result when
     Key :: key(),
-	SubKey :: key(),
-	Server :: depcache_server(),
-	Result :: {ok, any()} | undefined.
+    SubKey :: key(),
+    Server :: depcache_server(),
+    Result :: {ok, any()} | undefined.
 get(Key, SubKey, Server) ->
     case get_process_dict(Key, Server) of
         undefined -> 
@@ -487,8 +487,8 @@ get(Key, SubKey, Server) ->
 
 -spec flush( Key, Server ) -> Result when
     Key :: key(),
-	Server :: depcache_server(),
-	Result :: ok.
+    Server :: depcache_server(),
+    Result :: ok.
 flush(Key, Server) ->
     gen_server:call(Server, {flush, Key}),
     flush_process_dict().
@@ -501,8 +501,8 @@ flush(Key, Server) ->
 %%
 
 -spec flush( Server ) -> Result when
-	Server :: depcache_server(),
-	Result :: ok.
+    Server :: depcache_server(),
+    Result :: ok.
 flush(Server) ->
     gen_server:call(Server, flush),
     flush_process_dict().
@@ -511,8 +511,8 @@ flush(Server) ->
 %% @doc Return the total memory size of all stored terms
 
 -spec size( Server ) -> Result when
-	Server :: depcache_server(),
-	Result :: non_neg_integer() | undefined.
+    Server :: depcache_server(),
+    Result :: non_neg_integer() | undefined.
 size(Server) ->
     {_Meta, _Deps, Data} = get_tables(Server),
     ets:info(Data, memory).
@@ -522,8 +522,8 @@ size(Server) ->
 %% @doc Fetch the depcache tables.
 
 -spec get_tables( Server ) -> Result when
-	Server :: depcache_server(),
-	Result :: tuple().
+    Server :: depcache_server(),
+    Result :: tuple().
 get_tables(Server) ->
     case erlang:get(depcache_tables) of
         {ok, Server, Tables} ->
@@ -559,9 +559,9 @@ get_tables1(Server) when is_atom(Server) ->
 %% @doc Fetch a value from the dependency cache, using the in-process cached tables.
 
 -spec get_process_dict(Key, Server ) -> Result when
-	Key :: key(),
-	Server :: depcache_server(),
-	Result :: tuple() | depcache_disabled | undefined.
+    Key :: key(),
+    Server :: depcache_server(),
+    Result :: tuple() | depcache_disabled | undefined.
 get_process_dict(Key, Server) ->
     case in_process_server(Server) of
         true ->
@@ -591,9 +591,9 @@ get_process_dict(Key, Server) ->
 %% @doc Get cached value by key.
 
 -spec get_ets(Key, Server ) -> Result when
-	Key :: key(),
-	Server :: depcache_server(),
-	Result :: undefined | {ok, any()}.
+    Key :: key(),
+    Server :: depcache_server(),
+    Result :: undefined | {ok, any()}.
 get_ets(Key, Server) ->
     {MetaTable, DepsTable, DataTable} = get_tables(Server),
     case get_concurrent(Key, get_now(), MetaTable, DepsTable, DataTable) of
@@ -610,8 +610,8 @@ get_ets(Key, Server) ->
 %% @doc Check if we use a local process dict cache.
 
 -spec in_process_server( Server ) -> Result when
-	Server :: depcache_server(),
-	Result :: boolean().
+    Server :: depcache_server(),
+    Result :: boolean().
 in_process_server(Server) ->
     case erlang:get(depcache_in_process) of
         true ->
@@ -625,8 +625,8 @@ in_process_server(Server) ->
 %% @doc Enable or disable the in-process caching using the process dictionary
 
 -spec in_process( IsChaching ) -> Result when
-	IsChaching :: undefined | boolean(),
-	Result :: undefined | boolean().
+    IsChaching :: undefined | boolean(),
+    Result :: undefined | boolean().
 in_process(true) ->
     erlang:put(depcache_in_process, true);
 in_process(false) ->
@@ -640,7 +640,7 @@ in_process(undefined) ->
 %% @doc Flush all items memoized in the process dictionary.
 
 -spec flush_process_dict() -> Result when
-	Result :: ok.
+    Result :: ok.
 flush_process_dict() ->
     [ erlang:erase({depcache, Key}) || {{depcache, Key},_Value} <- erlang:get() ],
     erlang:erase(depache_now),
@@ -670,9 +670,9 @@ get_now() ->
 %% @doc Initialize the depcache.  Creates ets tables for the deps, meta and data.  Spawns garbage collector.
 
 -spec init(Config) -> Result when 
-	Config :: proplist(),
-	State :: state(),
-	Result :: {ok, State}.
+    Config :: proplist(),
+    State :: state(),
+    Result :: {ok, State}.
 init(Config) ->
     MemoryMaxMbs = case proplists:get_value(memory_max, Config) of undefined -> ?MEMORY_MAX; Mbs -> Mbs end,
     MemoryMaxWords = 1024 * 1024 * MemoryMaxMbs div erlang:system_info(wordsize),
@@ -715,57 +715,57 @@ init(Config) ->
 %% @doc Handling call messages
 
 -spec handle_call(Request, From, State) -> Result when 
-	Request :: get_tables,
-	From :: {pid(), atom()},
-	State :: state(),
-	Meta_table :: ets:tab(),
-	Deps_table :: ets:tab(),
-	Data_table :: ets:tab(),
-	Result :: {reply, {ok, {Meta_table, Deps_table, Data_table}}, State};
+    Request :: get_tables,
+    From :: {pid(), atom()},
+    State :: state(),
+    Meta_table :: ets:tab(),
+    Deps_table :: ets:tab(),
+    Data_table :: ets:tab(),
+    Result :: {reply, {ok, {Meta_table, Deps_table, Data_table}}, State};
 (Request, From, State) -> Result when 
-	Request :: get_wait,
-	From :: {pid(), atom()},
-	State :: state(),
-	Result :: {reply, Reply, state()} | {noreply, state()},
-	Reply :: undefined | {ok, term()};
+    Request :: get_wait,
+    From :: {pid(), atom()},
+    State :: state(),
+    Result :: {reply, Reply, state()} | {noreply, state()},
+    Reply :: undefined | {ok, term()};
 (Request, From, State) -> Result when
-	Request :: {get_waiting_pids, Key},
-	Key :: key(),
-	From :: {pid(), atom()},
-	State :: state(),
-	Result :: {reply, [{pid(), Tag}], state()},
-	Tag :: atom();
+    Request :: {get_waiting_pids, Key},
+    Key :: key(),
+    From :: {pid(), atom()},
+    State :: state(),
+    Result :: {reply, [{pid(), Tag}], state()},
+    Tag :: atom();
 (Request, From, State) -> Result when
-	Request :: {get, Key},
-	Key :: key(),
-	From :: {pid(), atom()},
-	State :: state(),
-	Result :: {reply, Reply, State},
-	Reply :: undefined | {ok, term()};
+    Request :: {get, Key},
+    Key :: key(),
+    From :: {pid(), atom()},
+    State :: state(),
+    Result :: {reply, Reply, State},
+    Reply :: undefined | {ok, term()};
 (Request, From, State) -> Result when
-	Request :: {get, Key, SubKey},
-	Key :: key(),
-	SubKey :: key(),
-	From :: {pid(), atom()},
-	State :: state(),
-	Result :: {reply, Reply, State},
-	Reply :: undefined | {ok, term()};
+    Request :: {get, Key, SubKey},
+    Key :: key(),
+    SubKey :: key(),
+    From :: {pid(), atom()},
+    State :: state(),
+    Result :: {reply, Reply, State},
+    Reply :: undefined | {ok, term()};
 (Request, From, State) -> Result when
-	Request :: {set, Key, Data, MaxAge, Depend},
-	Key :: key(),
-	Data :: any(),
-	MaxAge :: max_age_secs(),
-	Depend :: dependencies(),
-	From :: {pid(), atom()},
-	State :: state(),
-	Result :: {reply, Reply, State},
-	Reply :: ok;
+    Request :: {set, Key, Data, MaxAge, Depend},
+    Key :: key(),
+    Data :: any(),
+    MaxAge :: max_age_secs(),
+    Depend :: dependencies(),
+    From :: {pid(), atom()},
+    State :: state(),
+    Result :: {reply, Reply, State},
+    Reply :: ok;
 (Request, From, State) -> Result when
-	Request :: {flush, Key},
-	Key :: key(),
-	From :: {pid(), atom()},
-	State :: state(),
-	Result :: {reply, ok, State};
+    Request :: {flush, Key},
+    Key :: key(),
+    From :: {pid(), atom()},
+    State :: state(),
+    Result :: {reply, ok, State};
 (Request, From, State) -> Result when	
 	Request :: flush,
 	From :: {pid(), atom()},
@@ -799,10 +799,10 @@ handle_call(flush, _From, State) ->
 %% @doc Handling cast messages
 
 -spec handle_cast(Request, State) -> Result when 
-	Request :: {flush, Key} | flush | any(),
-	Key :: key(),
-	State :: state(),
-	Result :: {noreply, State}.
+    Request :: {flush, Key} | flush | any(),
+    Key :: key(),
+    State :: state(),
+    Result :: {noreply, State}.
 	
 handle_cast({flush, Key}, State) ->
     flush_key(Key, State),
@@ -824,9 +824,9 @@ handle_cast(_Msg, State) ->
 %% @see gen_server:handle_info/2
 
 -spec handle_info(Info, State) -> Result when 
-	Info :: tick | any(),
-	State :: state(),
-	Result :: {noreply, State}.
+    Info :: tick | any(),
+    State :: state(),
+    Result :: {noreply, State}.
 	
 handle_info(tick, State) ->
     erase_process_dict(),
@@ -841,9 +841,9 @@ handle_info(_Msg, State) ->
 %% @see gen_server:terminate/2
 
 -spec terminate(Reason, State) -> Result when
-	Reason :: normal | shutdown | {shutdown, term()} | term(),
-	State :: state(),
-	Result :: ok.
+    Reason :: normal | shutdown | {shutdown, term()} | term(),
+    State :: state(),
+    Result :: ok.
 
 terminate(_Reason, _State) -> ok.
 
