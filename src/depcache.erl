@@ -3,8 +3,8 @@
 %% @doc 
 %%
 %% == depcache API ==
-%% {@link flush/2},	{@link flush/1}, {@link get/2},	{@link get/3}, {@link get_subkey/3}, {@link get_wait/2}
-%% {@link set/4},	{@link set/5}, {@link size/1}, {@link set/3}
+%% {@link flush/1}, {@link flush/2}, {@link get/2},	{@link get/3}, {@link get_subkey/3}, 
+%% {@link get_wait/2}, {@link set/3}, {@link set/4},	{@link set/5}, {@link size/1}
 %% <br />
 %% {@link memo/2}, {@link memo/3}, {@link memo/4}, {@link memo/5}
 %% <br />
@@ -230,6 +230,8 @@ memo(Fun, Key, MaxAge, Dep, Server) ->
     end.
 
 %% @private
+%% @param MaxAge maximum lifetime of an element in the cache
+%% @param Dep list of subkeys
 %% @returns cached value
 %% @see memo/5
 
@@ -326,6 +328,7 @@ memo_send_errors(Key, Exception, Server) ->
 
 
 %% @doc Add the key to the depcache, hold it for `3600' seconds and no dependencies.
+%% @equiv set(Key, Data, 3600, [], Server)
 
 -spec set( Key, Data, Server ) -> Result when
     Key :: key(),
@@ -351,9 +354,11 @@ set(Key, Data, MaxAge, Server) ->
 
 
 %% @doc Add the key to the depcache, hold it for `MaxAge' seconds and check the dependencies.
+%% @param MaxAge maximum lifetime of an element in the cache
+%% @param Depend list of subkeys
 %% <br/>
 %% <b>See also:</b> 
-%% [http://erlang.org/doc/man/gen_server.html#call-3 gen_server:call/3].
+%% [http://erlang.org/doc/man/gen_server.html#call-2 gen_server:call/2].
 %%
 
 -spec set( Key, Data, MaxAge, Depend, Server ) -> Result when
@@ -364,7 +369,7 @@ set(Key, Data, MaxAge, Server) ->
 	Server :: depcache_server(),
 	Result :: ok.
 set(Key, Data, MaxAge, Depend, Server) ->
-    flush_process_dict(),
+	flush_process_dict(),
     gen_server:call(Server, {set, Key, Data, MaxAge, Depend}).
 
 
@@ -507,7 +512,7 @@ flush(Server) ->
 
 -spec size( Server ) -> Result when
 	Server :: depcache_server(),
-	Result :: non_neg_integer().
+	Result :: non_neg_integer() | undefined.
 size(Server) ->
     {_Meta, _Deps, Data} = get_tables(Server),
     ets:info(Data, memory).
@@ -984,7 +989,7 @@ handle_call_set({Key, Data, MaxAge, Depend}, #state{tables = Tables} = State) ->
             ets:delete(Tables#tables.data_table, Key);
         _ ->
             ets:insert(Tables#tables.data_table, {Key, Data}),
-            ets:insert(Tables#tables.meta_table, #meta{key=Key, expire=State1#state.now+MaxAge, serial=State1#state.serial, depend=Depend})
+			ets:insert(Tables#tables.meta_table, #meta{key=Key, expire=State1#state.now+MaxAge, serial=State1#state.serial, depend=Depend})
     end,
     
     %% Make sure all dependency keys are available in the deps table
