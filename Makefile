@@ -10,12 +10,13 @@ compile: $(REBAR)
 
 test: $(REBAR)
 	$(REBAR) eunit
+	$(REBAR) as test proper -n 10
 
 xref: $(REBAR)
 	$(REBAR) xref
 
 dialyzer: $(REBAR)
-	$(REBAR) dialyzer
+	$(REBAR) as test dialyzer
 
 edoc:
 	mkdir -p doc && cp -fR doc_src/* doc
