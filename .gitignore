@@ -2,6 +2,8 @@
 *.beam
 /ebin/depcache.app
 /.rebar/erlcinfo
-doc/
 _build
 rebar3
+doc/*
+!doc/style.css
+!doc/overview.edoc

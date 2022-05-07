@@ -19,9 +19,13 @@ dialyzer: $(REBAR)
 
 edoc:
 	$(REBAR) edoc
+	
+edoc_private:
+	$(REBAR) as edoc_private edoc
 
 clean:
 	$(REBAR) clean
+	rm -rf doc
 
 ./rebar3:
 	erl -noshell -s inets start -s ssl start \

@@ -1,0 +1,6 @@
+@author Arjan Scherpenisse <arjan@scherpenisse.net>
+@author Marc Worrell <marc@worrell.nl>
+@title depcache
+@doc In-memory caching server with dependency checks and local in process memoization of lookups.
+@copyright Apache-2.0 License 2022 by Marc Worrell, Arjan Scherpenisse
+@reference See <a href="http://aosabook.org/en/posa/zotonic.html#posa.zotonic.depcache">The Performance of Open Source Applications</a> for more information.
