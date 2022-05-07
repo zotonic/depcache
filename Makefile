@@ -19,11 +19,9 @@ dialyzer: $(REBAR)
 	$(REBAR) as test dialyzer
 
 edoc:
-	mkdir -p doc && cp -fR doc_src/* doc
 	$(REBAR) edoc
 	
 edoc_private:
-	mkdir -p doc && cp -fR doc_src/* doc
 	$(REBAR) as edoc_private edoc
 
 clean:
