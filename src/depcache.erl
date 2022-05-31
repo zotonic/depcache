@@ -1,6 +1,6 @@
 %% @author Arjan Scherpenisse
 %% @copyright 2009-2020 Marc Worrell, Arjan Scherpenisse
-%% @doc 
+%% @doc Depcache API
 %%
 %% == depcache API ==
 %% {@link flush/1}, {@link flush/2}, {@link get/2},	{@link get/3}, {@link get_subkey/3}, 
@@ -667,6 +667,7 @@ get_now() ->
 
 %% gen_server callbacks
 
+%% @private
 %% @doc Initialize the depcache.  Creates ets tables for the deps, meta and data.  Spawns garbage collector.
 
 -spec init(Config) -> Result when 
@@ -712,6 +713,7 @@ init(Config) ->
                }]),
     {ok, State}.
 
+%% @private
 %% @doc Handling call messages
 
 -spec handle_call(Request, From, State) -> Result when 
@@ -795,7 +797,7 @@ handle_call({flush, Key}, _From, State) ->
 handle_call(flush, _From, State) ->
 	handle_call_flush_all(State).
 
-
+%% @private
 %% @doc Handling cast messages
 
 -spec handle_cast(Request, State) -> Result when 
@@ -818,10 +820,9 @@ handle_cast(flush, #state{tables = Tables} = State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-    
+%% @private    
 %% @doc This function is called by a `gen_server' process when when it receives `tick' or
 %% any other message than a synchronous or asynchronous request (or a system message).
-%% @see gen_server:handle_info/2
 
 -spec handle_info(Info, State) -> Result when 
     Info :: tick | any(),
@@ -836,9 +837,8 @@ handle_info(tick, State) ->
 handle_info(_Msg, State) -> 
     {noreply, State}.
 
-
+%% @private
 %% @doc This function is called by a `gen_server' process when it is about to terminate.
-%% @see gen_server:terminate/2
 
 -spec terminate(Reason, State) -> Result when
     Reason :: normal | shutdown | {shutdown, term()} | term(),
@@ -850,7 +850,7 @@ terminate(_Reason, _State) -> ok.
 
 %% @doc This function is called by a gen_server process when it is to update 
 %% its internal state during a release upgrade/downgrade.
-%% @see gen_server:code_change/3
+%% @private
 
 -spec code_change(OldVersion, State, Extra) -> Result when
 	OldVersion :: (term() | {down, term()}),

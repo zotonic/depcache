@@ -1,4 +1,5 @@
 ![Test](https://github.com/zotonic/depcache/workflows/Test/badge.svg)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?logo=apache&logoColor=red)](https://www.apache.org/licenses/LICENSE-2.0)
 
 depcache
 ========
@@ -16,10 +17,26 @@ Usage
 
 Start a depcache server like this:
 
+```
     {ok, Server} = depcache:start_link([]).
+```
 
 Now you can get and set values using the returned `Server` pid.
 
+
+## Documentation generation
+
+### Edoc
+
+#### Generate public API
+`rebar3 edoc`
+
+#### Generate private API
+`rebar3 as edoc_private edoc`
+
+### ExDoc
+
+`rebar3 ex_doc --logo doc/img/logo.png --output edoc`
 
 License
 -------

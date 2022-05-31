@@ -18,18 +18,23 @@ xref: $(REBAR)
 dialyzer: $(REBAR)
 	$(REBAR) as test dialyzer
 
-edoc:
-	$(REBAR) edoc
-	
-edoc_private:
-	$(REBAR) as edoc_private edoc
-
 clean:
 	$(REBAR) clean
-	rm -rf doc
 
 ./rebar3:
 	erl -noshell -s inets start -s ssl start \
         -eval '{ok, saved_to_file} = httpc:request(get, {"$(REBAR_URL)", []}, [], [{stream, "./rebar3"}])' \
         -s inets stop -s init stop
 	chmod +x ./rebar3
+
+##
+## Doc targets
+##
+edoc: $(REBAR)
+	$(REBAR) edoc
+
+edoc_private: $(REBAR)	
+	$(REBAR) as edoc_private edoc
+
+exdoc: $(REBAR)	
+	$(REBAR) ex_doc --logo doc/img/logo.png --output edoc
