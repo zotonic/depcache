@@ -274,17 +274,9 @@ memo_key(Fun, Key, MaxAge, Dep, Server) ->
 %% @doc Calculate the key used for memo functions.
 %% Returns cached value.
 
--spec memo_key( MFA ) -> Result when
-    MFA :: {Module, Function, Arity},
-	Module :: module(),
-	Function :: atom(),
-	Arity :: arity(),
-	Result :: tuple();
-( MF ) -> Result when
-	MF :: {Module, Function},
-	Module :: module(),
-	Function :: atom(),
-	Result :: tuple().
+-spec memo_key( Fun ) -> Result when
+    Fun :: memo_fun(),
+    Result :: tuple().
 memo_key(MFA) when is_function(MFA) ->
     MFA();
 memo_key({M,F,A}) -> 
