@@ -285,6 +285,8 @@ memo_key(Fun, Key, MaxAge, Dep, Server) ->
 	Module :: module(),
 	Function :: atom(),
 	Result :: tuple().
+memo_key(MFA) when is_function(MFA) ->
+    MFA();
 memo_key({M,F,A}) -> 
     WithoutContext = lists:filter(fun(T) when is_tuple(T) andalso element(1, T) =:= context -> false; (_) -> true end, A),
     {M,F,WithoutContext};
