@@ -1212,9 +1212,10 @@ check_depend(Serial, Depend, DepsTable) ->
     lists:foldl(CheckDepend, true, Depend).
 
 
+-dialyzer({nowarn_function, find_value/2}).
+
 %% @private
 %% @doc Search by value in some set of data.
-
 -spec find_value(Key, Data) -> Result when
 	Key :: key() | integer(),
 	Data :: map() | List | Rsc_list | tuple() | any(),
@@ -1264,9 +1265,7 @@ find_value(Key, Tuple) when is_tuple(Tuple) ->
     Module = element(1, Tuple),
     case Module of
         dict ->
-			{Key1, Value} = Tuple,
-			Dict = dict:append(Key1, Value, dict:new()),
-            case dict:find(Key, Dict) of
+            case dict:find(Key, Tuple) of
                 {ok, Val} ->
                     Val;
                 _ ->
