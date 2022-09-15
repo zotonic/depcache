@@ -1212,10 +1212,14 @@ check_depend(Serial, Depend, DepsTable) ->
     lists:foldl(CheckDepend, true, Depend).
 
 
+%% Don't warn about types in find_value, especially the dict lookup
+%% triggers warnings from dialyzer about the tuple not being an
+%% opaque dict() type.
 -dialyzer({nowarn_function, find_value/2}).
 
 %% @private
 %% @doc Search by value in some set of data.
+
 -spec find_value(Key, Data) -> Result when
 	Key :: key() | integer(),
 	Data :: map() | List | Rsc_list | tuple() | any(),
