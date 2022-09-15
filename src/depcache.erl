@@ -1252,16 +1252,20 @@ find_value(Key, {rsc_list, [H|_T]}) ->
 find_value(_Key, {rsc_list, []}) ->
     undefined;
 find_value(Key, T) when is_integer(Key) andalso is_tuple(T) ->
-    % Index of tuple with an integer like "a[2]"
-    try
-        element(Key, T)
-    catch
-        _:_ -> undefined
+    %% Index of tuple with an integer like "a[2]"
+    case array:is_array(T) of
+        true ->
+            array:get(Key, T);
+        false ->
+            try
+                element(Key, T)
+            catch
+                _:_ -> undefined
+            end
     end;
 find_value(Key, Tuple) when is_tuple(Tuple) ->
-    %% Other cases: context or dict lookup.
-    Module = element(1, Tuple),
-    case Module of
+    %% Might be a dict lookup
+    case element(1, Tuple) of
         dict ->
             case dict:find(Key, Tuple) of
                 {ok, Val} ->
@@ -1269,12 +1273,8 @@ find_value(Key, Tuple) when is_tuple(Tuple) ->
                 _ ->
                     undefined
             end;
-        Module when is_atom(Key) ->
-            Exports = Module:module_info(exports),
-            case proplists:get_value(Key, Exports) of
-                1 -> Module:Key();
-                _ -> undefined
-            end
+        _ ->
+            undefined
     end;
 find_value(_Key, _Data) ->
     %% Any subvalue of a non-existant value is empty
