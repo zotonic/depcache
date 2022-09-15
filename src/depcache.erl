@@ -401,7 +401,7 @@ get_wait(Key, Server) ->
     Key :: key(),
     Server :: depcache_server(),
     Result :: [{pid(), Tag}],
-    Tag :: atom().
+    Tag :: gen_server:reply_tag().
 	
 get_waiting_pids(Key, Server) ->
     gen_server:call(Server, {get_waiting_pids, Key}, ?MAX_GET_WAIT*1000).
@@ -712,7 +712,7 @@ init(Config) ->
 
 -spec handle_call(Request, From, State) -> Result when 
     Request :: get_tables,
-    From :: {pid(), atom()},
+    From :: {pid(), gen_server:reply_tag()},
     State :: state(),
     Meta_table :: ets:tab(),
     Deps_table :: ets:tab(),
@@ -720,21 +720,21 @@ init(Config) ->
     Result :: {reply, {ok, {Meta_table, Deps_table, Data_table}}, State};
 (Request, From, State) -> Result when 
     Request :: get_wait,
-    From :: {pid(), atom()},
+    From :: {pid(), gen_server:reply_tag()},
     State :: state(),
     Result :: {reply, Reply, state()} | {noreply, state()},
     Reply :: undefined | {ok, term()};
 (Request, From, State) -> Result when
     Request :: {get_waiting_pids, Key},
     Key :: key(),
-    From :: {pid(), atom()},
+    From :: {pid(), gen_server:reply_tag()},
     State :: state(),
     Result :: {reply, [{pid(), Tag}], state()},
-    Tag :: atom();
+    Tag :: gen_server:reply_tag();
 (Request, From, State) -> Result when
     Request :: {get, Key},
     Key :: key(),
-    From :: {pid(), atom()},
+    From :: {pid(), gen_server:reply_tag()},
     State :: state(),
     Result :: {reply, Reply, State},
     Reply :: undefined | {ok, term()};
@@ -742,7 +742,7 @@ init(Config) ->
     Request :: {get, Key, SubKey},
     Key :: key(),
     SubKey :: key(),
-    From :: {pid(), atom()},
+    From :: {pid(), gen_server:reply_tag()},
     State :: state(),
     Result :: {reply, Reply, State},
     Reply :: undefined | {ok, term()};
@@ -752,19 +752,19 @@ init(Config) ->
     Data :: any(),
     MaxAge :: max_age_secs(),
     Depend :: dependencies(),
-    From :: {pid(), atom()},
+    From :: {pid(), gen_server:reply_tag()},
     State :: state(),
     Result :: {reply, Reply, State},
     Reply :: ok;
 (Request, From, State) -> Result when
     Request :: {flush, Key},
     Key :: key(),
-    From :: {pid(), atom()},
+    From :: {pid(), gen_server:reply_tag()},
     State :: state(),
     Result :: {reply, ok, State};
 (Request, From, State) -> Result when	
 	Request :: flush,
-	From :: {pid(), atom()},
+	From :: {pid(), gen_server:reply_tag()},
 	State :: state(),
 	Result :: {reply, ok, State}.
 handle_call(get_tables, _From, State) ->
@@ -1206,6 +1206,11 @@ check_depend(Serial, Depend, DepsTable) ->
     lists:foldl(CheckDepend, true, Depend).
 
 
+%% Don't warn about types in find_value, especially the dict lookup
+%% triggers warnings from dialyzer about the tuple not being an
+%% opaque dict() type.
+-dialyzer({nowarn_function, find_value/2}).
+
 %% @private
 %% @doc Search by value in some set of data.
 
@@ -1258,9 +1263,7 @@ find_value(Key, Tuple) when is_tuple(Tuple) ->
     Module = element(1, Tuple),
     case Module of
         dict ->
-			{Key1, Value} = Tuple,
-			Dict = dict:append(Key1, Value, dict:new()),
-            case dict:find(Key, Dict) of
+            case dict:find(Key, Tuple) of
                 {ok, Val} ->
                     Val;
                 _ ->
