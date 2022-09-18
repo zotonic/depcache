@@ -56,13 +56,15 @@
 -define(WITH_STACKTRACE(T, R, S), T:R:S ->).
 -endif.
 
--type memo_fun() :: function() | mfa() | {module(), atom()}.
+-type mfargs() :: {module(), atom(), list()}.
+-type memo_fun() :: function() | mfargs() | {module(), atom()}.
 -type depcache_server() :: pid() | atom().
 -type sec() :: non_neg_integer().
 -type max_age_secs() :: sec().
 -type key() :: any().
 -type dependencies() :: list( key() ).
 -type proplist() :: proplists:proplist().
+-type callback() :: mfargs().
 
 -export_type([
     memo_fun/0,
@@ -77,7 +79,7 @@
     data_table :: ets:tab()
 }).
 
--record(state,  {now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: dict:dict()}).
+-record(state,  {now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map()}).
 -record(meta,   {key :: key(), expire :: sec(), serial :: non_neg_integer(), depend :: dependencies()}).
 -record(depend, {key :: key(), serial :: non_neg_integer()}).
 
@@ -86,14 +88,19 @@
     tables :: #tables{},
     name :: atom(),
     memory_max :: non_neg_integer(),
-    callback :: mfa() | undefined
+    callback :: callback() | undefined
 }).
 
 -type tables() :: #tables{meta_table :: ets:tab(), deps_table :: ets:tab(), data_table :: ets:tab()}.
--type state() :: #state{now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: dict:dict()}.
+-type state() :: #state{now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map()}.
 -type depend() :: #depend{key :: key(), serial :: non_neg_integer()}.
--type cleanup_state() :: #cleanup_state{pid :: pid(), tables :: tables(), name :: atom(), memory_max :: non_neg_integer(), callback :: mfa() | undefined}.
+-type cleanup_state() :: #cleanup_state{pid :: pid(), tables :: tables(), name :: atom(), memory_max :: non_neg_integer(), callback :: callback() | undefined}.
 -type meta() :: #meta{key :: key(), expire :: sec(), serial :: non_neg_integer(), depend :: dependencies()}.
+-type config() :: config_map() | config_proplist().
+-type config_map() :: #{memory_max => non_neg_integer() | undefined,
+                        callback => callback() | undefined}.
+-type config_proplist() :: list({memory_max, non_neg_integer | undefined}
+                              | {callback, callback() | undefined}).
 
 
 %% @doc Start a depcache process.
@@ -102,16 +109,23 @@
 %% [http://erlang.org/doc/man/gen_server.html#start_link-3 gen_server:start_link/3].
 %%
 %% For Config, you can pass:
-%% `{callback, {Module, Function, Arguments}}': depcache event callback
-%% `{memory_max, MaxMemoryInMB}': number of MB to limit depcache size at.
+%% <dl>
+%%   <dt>`callback => {Module, Function, Arguments}'</dt>
+%%   <dd>depcache event callback</dd>
+%%   <dt>`memory_max => MaxMemoryInMB'</dt>
+%%   <dd>number of MB to limit depcache size at</dd>
+%% </dl>
 %% @param Config configuration options
 %% @returns Result of starting gen_server item.
 
 -spec start_link(Config) -> Result when 
-    Config :: proplist(),
+    Config :: config(),
     Result :: {ok, pid()} | ignore | {error, term()}.
+start_link(Config) when is_map(Config) ->
+    ensure_valid_config(Config),
+    gen_server:start_link(?MODULE, Config, []);
 start_link(Config) ->
-    gen_server:start_link(?MODULE, Config, []).
+    start_link(proplists_to_map(Config)).
 
 
 %% @doc Start a named depcache process.
@@ -120,19 +134,85 @@ start_link(Config) ->
 %% [http://erlang.org/doc/man/gen_server.html#start_link-4 gen_server:start_link/4].
 %%
 %% For Config, you can pass:
-%% `{callback, {Module, Function, Arguments}}': depcache event callback
-%% `{memory_max, MaxMemoryInMB}': number of MB to limit depcache size at.
+%% <dl>
+%%   <dt>`callback => {Module, Function, Arguments}'</dt>
+%%   <dd>depcache event callback</dd>
+%%   <dt>`memory_max => MaxMemoryInMB'</dt>
+%%   <dd>number of MB to limit depcache size at</dd>
+%% </dl>
 %% @param Name of process
 %% @param Config configuration options
 %% @returns Result of starting gen_server item.
 
 -spec start_link(Name, Config) -> Result when 
     Name :: atom(), 
-    Config :: proplist(),
+    Config :: config(),
     Result :: {ok, pid()} | ignore | {error, term()}.
+start_link(Name, Config) when is_map(Config) ->
+    ensure_valid_config(Config),
+    gen_server:start_link({local, Name}, ?MODULE, Config#{name => Name}, []);
 start_link(Name, Config) ->
-    gen_server:start_link({local, Name}, ?MODULE, [{name,Name}|Config], []).
+    start_link(Name, proplists_to_map(Config)).
 
+-ifdef(OTP_RELEASE).
+    -if(?OTP_RELEASE >= 24).
+        -define(has_proplists_to_map, true).
+    -endif.
+-endif.
+
+-spec proplists_to_map(PropList) -> Map when
+    PropList :: proplist(),
+    Map :: map().
+-ifdef(has_proplists_to_map).
+%% proplists:to_map was introduced in OTP 24.
+proplists_to_map(List) ->
+    proplists:to_map(List).
+-else.
+%% Backport of proplists:to_map.
+%% Copied from https://github.com/erlang/otp/blob/master/lib/stdlib/src/proplists.erl#L704-L720
+proplists_to_map(List) ->
+    lists:foldr(
+        fun
+            ({K, V}, M) ->
+                M#{K => V};
+            %% if tuples with arity /= 2 appear before atoms or
+            %% tuples with arity == 2, proplists:get_value/2,3 returns early
+            (T, M) when 1 =< tuple_size(T) ->
+                maps:remove(element(1, T), M);
+            (K, M) when is_atom(K) ->
+                M#{K => true};
+            (_, M) ->
+                M
+        end,
+        #{},
+        List
+    ).
+-endif.
+
+-spec ensure_valid_config(Config) -> ok when
+    Config :: config_map().
+ensure_valid_config(Config) ->
+    maps:fold(
+        fun
+            (memory_max, undefined, Acc) ->
+                Acc;
+            (memory_max, MemoryMax, Acc) when is_integer(MemoryMax), MemoryMax >= 0 ->
+                Acc;
+            (callback, undefined, Acc) ->
+                Acc;
+            (callback, {M, F, Args}, Acc) when is_atom(M), is_atom(F), is_list(Args) ->
+                Acc;
+            (callback, {M, F, _Arg}, Acc) when is_atom(M), is_atom(F) ->
+                %% LEGACY: depcache handles non-list arguments as if a list of
+		%%         that single argument was given, which is ambiguous and
+		%%         should be discouraged
+                Acc;
+            (_, _, _) ->
+                error(badarg)
+        end,
+	ok,
+        Config
+    ).
 
 -define(META_TABLE_PREFIX, $m).
 -define(DEPS_TABLE_PREFIX, $p).
@@ -157,7 +237,7 @@ start_link(Name, Config) ->
 
 
 %% @doc Cache the result of the function for an hour.
-%% @param Fun a funciton for producing a value 
+%% @param Fun a function for producing a value
 %% @returns cached value
 
 -spec memo( Fun, Server ) -> Result when 
@@ -172,7 +252,7 @@ memo(Fun, Server) ->
 %%      Fun is a {M,F,A} tuple then derive the key from the tuple and
 %%      cache for `MaxAge' seconds.
 %% 
-%% @param Fun a funciton for producing a value1 
+%% @param Fun a function for producing a value1
 %% @param MaxAge a caching time
 %% @param Key a cache item key
 %% @returns cached value
@@ -665,14 +745,17 @@ get_now() ->
 %% @doc Initialize the depcache.  Creates ets tables for the deps, meta and data.  Spawns garbage collector.
 
 -spec init(Config) -> Result when 
-    Config :: proplist(),
+    Config :: config_map(),
     State :: state(),
     Result :: {ok, State}.
 init(Config) ->
-    MemoryMaxMbs = case proplists:get_value(memory_max, Config) of undefined -> ?MEMORY_MAX; Mbs -> Mbs end,
+    MemoryMaxMbs = case maps:get(memory_max, Config, undefined) of
+                       undefined -> ?MEMORY_MAX;
+                       MemoryMaxMbs1 -> MemoryMaxMbs1
+                   end,
     MemoryMaxWords = 1024 * 1024 * MemoryMaxMbs div erlang:system_info(wordsize),
 
-    Tables = case proplists:lookup(name, Config) of
+    Tables = case maps:get(name, Config, none) of
         none ->
             #tables{
                 meta_table=ets:new(meta_table, [set, {keypos, 2}, protected, {read_concurrency, true}]),
@@ -693,17 +776,17 @@ init(Config) ->
         tables = Tables,
         now=now_sec(),
         serial=0,
-        wait_pids=dict:new()
+        wait_pids=#{}
     },
-    timer:send_interval(1000, tick),
+    timer:send_after(1000, tick),
     spawn_link(?MODULE,
                cleanup,
                [#cleanup_state{
                    pid = self(),
                    tables = Tables,
-                   name = proplists:get_value(name, Config),
+                   name = maps:get(name, Config, none),
                    memory_max = MemoryMaxWords,
-                   callback = proplists:get_value(callback, Config)
+                   callback = maps:get(callback, Config, undefined)
                }]),
     {ok, State}.
 
@@ -824,8 +907,8 @@ handle_cast(_Msg, State) ->
     Result :: {noreply, State}.
 	
 handle_info(tick, State) ->
+    timer:send_after(1000, tick),
     erase_process_dict(),
-    flush_message(tick),
     {noreply, State#state{now=now_sec()}};
 
 handle_info(_Msg, State) -> 
@@ -889,14 +972,14 @@ handle_call_get_wait(Key, From, #state{tables = Tables} = State) ->
                 flush -> flush_key(Key, State);
                 undefined -> State
             end,
-            case dict:find(Key, State#state.wait_pids) of
-                {ok, {MaxAge,List}} when State#state.now < MaxAge ->
+            case State#state.wait_pids of
+                #{Key := {MaxAge, List}} when State#state.now < MaxAge ->
                     %% Another process is already calculating the value, let the caller wait.
-                    WaitPids = dict:store(Key, {MaxAge, [From|List]}, State#state.wait_pids),
+                    WaitPids = maps:update(Key, {MaxAge, [From|List]}, State#state.wait_pids),
                     {noreply, State#state{wait_pids=WaitPids}};
                 _ ->
                     %% Nobody waiting or we hit a timeout, let next requestors wait for this caller.
-                    WaitPids = dict:store(Key, {State#state.now+?MAX_GET_WAIT, []}, State#state.wait_pids),
+                    WaitPids = maps:put(Key, {State#state.now+?MAX_GET_WAIT, []}, State#state.wait_pids),
                     {reply, undefined, State#state{wait_pids=WaitPids}}
             end;
         {ok, _Value} = Found -> 
@@ -915,12 +998,11 @@ handle_call_get_wait(Key, From, #state{tables = Tables} = State) ->
 	Result :: {reply, [{pid(), Tag}], state()},
 	Tag :: atom().
 handle_call_get_waiting_pids(Key, State) ->
-    {State1, Pids} = case dict:find(Key, State#state.wait_pids) of
-                        {ok, {_MaxAge, List}} -> 
-                            WaitPids = dict:erase(Key, State#state.wait_pids),
-                            {State#state{wait_pids=WaitPids}, List};
-                        error ->
-                            {State, []}
+    {State1, Pids} = case maps:take(Key, State#state.wait_pids) of
+                         {{_MaxAge, List}, WaitPids} ->
+                             {State#state{wait_pids=WaitPids}, List};
+                         error ->
+                             {State, []}
                      end,
     flush_key(Key, State1),
     {reply, Pids, State1}.
@@ -999,11 +1081,10 @@ handle_call_set({Key, Data, MaxAge, Depend}, #state{tables = Tables} = State) ->
     end,
 
     %% Check if other processes are waiting for this key, send them the data
-    case dict:find(Key, State1#state.wait_pids) of
-        {ok, {_MaxAge, List}} ->
-            [ catch gen_server:reply(From, {ok, Data}) || From <- List ],
-            WaitFroms = dict:erase(Key, State1#state.wait_pids),
-            {reply, ok, State1#state{wait_pids=WaitFroms}};
+    case maps:take(Key, State1#state.wait_pids) of
+        {{_MaxAge, List}, WaitPids} ->
+            _ = [ catch gen_server:reply(From, {ok, Data}) || From <- List ],
+            {reply, ok, State1#state{wait_pids=WaitPids}};
         error ->
             {reply, ok, State1}
     end.
@@ -1230,11 +1311,10 @@ find_value(Key, L) when is_integer(Key) andalso is_list(L) ->
         _:_ -> undefined
     end;
 find_value(Key, {GBSize, GBData}) when is_integer(GBSize) ->
-	Tree = gb_trees:from_orddict([{GBSize, GBData}]),
-	case gb_trees:lookup(Key, Tree) of
-        {value, Val} ->
-            Val;
-        _ ->
+    case Key == GBSize of
+        true ->
+            GBData;
+        false ->
             undefined
     end;
 find_value(Key, L) when is_list(L) ->
@@ -1410,7 +1490,7 @@ cleanup_check_expire_stamp(State, MetaTable, SlotNr, Now, Ct) ->
 	Ct :: integer(),
 	Pid :: pid(),
 	Name :: atom(),
-	Callback :: undefined | mfa(),
+	Callback :: undefined | callback(),
 	Result :: no_return().
 cleanup_random(State, MetaTable, SlotNr, Now, Ct, Pid, Name, Callback) ->
     Slot =  try
@@ -1526,21 +1606,9 @@ erase_process_dict() ->
 
 
 %% @private
-%% @doc Flush all incoming messages, used when receiving timer ticks to prevent multiple ticks.
-
--spec flush_message(Msg) -> Result when
-	Msg :: any(),
-	Result :: ok.
-flush_message(Msg) ->
-    receive
-        Msg -> flush_message(Msg)
-    after 0 ->
-            ok
-    end.
-
-
-%% @private
 %% @doc Returns the result of applying `Function' in `Module' to `Args'.
+
+-dialyzer({no_match, callback/3}).
 
 -spec callback(Type, Name, MFA) -> Result when
 	Type :: eviction | atom(), 
@@ -1550,18 +1618,7 @@ flush_message(Msg) ->
 (Type, Name, MFA) -> Result when
 	Type :: eviction | atom(), 
 	Name ::  atom(),
-    MFA :: {Module, Function, Arity},
-	Module :: module(),
-	Function :: atom(),
-	Arity :: list(),
-	Result :: nop | ok | term();
-(Type, Name, MFA) -> Result when
-	Type :: eviction | atom(), 
-	Name ::  atom(),
-    MFA :: {Module, Function, Arity},
-	Module :: module(),
-	Function :: atom(),
-	Arity :: arity(),
+	MFA :: mfargs(),
 	Result :: nop | ok | term().
 callback(_Type, _Name, undefined) ->
     ok;
@@ -1574,4 +1631,5 @@ callback(Type, Name, {M, F, A}) when is_list(A) ->
             nop
     end;
 callback(Type, Name, {M, F, A}) ->
+    %% LEGACY: treating non-lists A as [A] is ambiguous
     callback(Type, Name, {M, F, [A]}).

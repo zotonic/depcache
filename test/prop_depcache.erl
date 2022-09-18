@@ -143,7 +143,7 @@ prop_memo() ->
 
 setup() ->
 	fun() ->
-		{ok, Server} = depcache:start_link([]),
+		{ok, Server} = depcache:start_link(#{}),
 		register(dep, Server),
 		fun() -> 
 			depcache:flush(Server),
