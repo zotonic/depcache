@@ -1287,9 +1287,9 @@ check_depend(Serial, Depend, DepsTable) ->
     lists:foldl(CheckDepend, true, Depend).
 
 
-%% Don't warn about types in find_value, especially the dict lookup
+%% Don't warn about types in find_value, especially the array lookup
 %% triggers warnings from dialyzer about the tuple not being an
-%% opaque dict() type.
+%% opaque array() type.
 -dialyzer({nowarn_function, find_value/2}).
 
 %% @private
@@ -1310,13 +1310,6 @@ find_value(Key, L) when is_integer(Key) andalso is_list(L) ->
     catch
         _:_ -> undefined
     end;
-find_value(Key, {GBSize, GBData}) when is_integer(GBSize) ->
-    case Key == GBSize of
-        true ->
-            GBData;
-        false ->
-            undefined
-    end;
 find_value(Key, L) when is_list(L) ->
     %% Regular proplist lookup
     proplists:get_value(Key, L);
@@ -1331,29 +1324,19 @@ find_value(Key, {rsc_list, [H|_T]}) ->
     find_value(Key, H);
 find_value(_Key, {rsc_list, []}) ->
     undefined;
-find_value(Key, T) when is_integer(Key) andalso is_tuple(T) ->
-    %% Index of tuple with an integer like "a[2]"
+find_value(Key, T) when is_integer(Key) ->
     case array:is_array(T) of
         true ->
+            %% Index of array with an integer like "a[2]"
             array:get(Key, T);
-        false ->
+        false when is_tuple(T) ->
+            %% Index of tuple with an integer like "a[2]"
             try
                 element(Key, T)
             catch
                 _:_ -> undefined
-            end
-    end;
-find_value(Key, Tuple) when is_tuple(Tuple) ->
-    %% Might be a dict lookup
-    case element(1, Tuple) of
-        dict ->
-            case dict:find(Key, Tuple) of
-                {ok, Val} ->
-                    Val;
-                _ ->
-                    undefined
             end;
-        _ ->
+        false ->
             undefined
     end;
 find_value(_Key, _Data) ->
