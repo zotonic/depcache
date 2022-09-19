@@ -25,7 +25,7 @@
 %%     receive after 5000 -> y end.
 
 get_set_test() ->
-    {ok, C} = depcache:start_link([]),
+    {ok, C} = depcache:start_link(#{}),
 
     ?assertEqual(undefined, depcache:get(test_key, C)),
     depcache:set(test_key, 123, C),
@@ -35,7 +35,7 @@ get_set_test() ->
 
 
 flush_all_test() ->
-    {ok, C} = depcache:start_link([]),
+    {ok, C} = depcache:start_link(#{}),
 
     depcache:set(test_key, 123, C),
     depcache:set(test_key2, 123, C),
@@ -51,7 +51,7 @@ flush_all_test() ->
 %% Temporarily disabled - tests works when ran from the zotonic shell, but not from the 'runtests' command.
 
 get_set_maxage_test() ->
-    {ok, C} = depcache:start_link([]),
+    {ok, C} = depcache:start_link(#{}),
 
     ?assertEqual(undefined, depcache:get(xtest_key, C)),
 
@@ -65,7 +65,7 @@ get_set_maxage_test() ->
 
 
 get_set_maxage0_test() ->
-    {ok, C} = depcache:start_link([]),
+    {ok, C} = depcache:start_link(#{}),
 
     ?assertEqual(undefined, depcache:get(test_key, C)),
 
@@ -75,7 +75,7 @@ get_set_maxage0_test() ->
 
 
 get_set_depend_test() ->
-    {ok, C} = depcache:start_link([]),
+    {ok, C} = depcache:start_link(#{}),
 
     ?assertEqual(undefined, depcache:get(test_key, C)),
 
@@ -96,7 +96,7 @@ increase(X) ->
     I.
 
 map_test() ->
-    {ok, C} = depcache:start_link([]),
+    {ok, C} = depcache:start_link(#{}),
     ?assertEqual(undefined, depcache:get(a, b, C)),
     depcache:set(a, #{ b => 1 }, C),
     ?assertEqual({ok, 1}, depcache:get(a, b, C)),
@@ -104,7 +104,7 @@ map_test() ->
 
 
 memo_test() ->
-    {ok, C} = depcache:start_link([]),
+    {ok, C} = depcache:start_link(#{}),
 
     IncreaserFun = fun() ->
                            increase(x)
@@ -118,7 +118,7 @@ memo_test() ->
 
 
 memo_record_test() ->
-    {ok, C} = depcache:start_link([]),
+    {ok, C} = depcache:start_link(#{}),
 
     Fun = fun() -> V = increase(y), #memo{value=V, deps=[dep]} end,
 
@@ -133,7 +133,7 @@ raise_error() ->
     erlang:error(some_error).
 
 memo_raise_test() ->
-    {ok, C} = depcache:start_link([]),
+    {ok, C} = depcache:start_link(#{}),
 
     Fun = fun() -> raise_error() end,
     try
