@@ -15,6 +15,8 @@ For a detailed explanation, see the chapter on depcache in the book
 Usage
 -----
 
+Add the Hex package in your config file https://hex.pm/packages/depcache
+
 Start a depcache server like this:
 
 ```
