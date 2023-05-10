@@ -762,7 +762,7 @@ init(Config) ->
                 deps_table=ets:new(deps_table, [set, {keypos, 2}, protected, {read_concurrency, true}]),
                 data_table=ets:new(data_table, [set, {keypos, 1}, protected, {read_concurrency, true}])
             };
-        {name, Name} when is_atom(Name) ->
+        Name when is_atom(Name) ->
             #tables{
                 meta_table=ets:new(?NAMED_TABLE(Name, ?META_TABLE_PREFIX),
                                    [set, named_table, {keypos, 2}, protected, {read_concurrency, true}]),
