@@ -1,6 +1,14 @@
 -module(prop_depcache).
 -include_lib("proper/include/proper.hrl").
 
+-dialyzer({nowarn_function, prop_set_get/0}).
+-dialyzer({nowarn_function, prop_flush_all/0}).
+-dialyzer({nowarn_function, prop_get_set_maxage/0}).
+-dialyzer({nowarn_function, prop_get_set_maxage_0/0}).
+-dialyzer({nowarn_function, prop_get_set_depend/0}).
+-dialyzer({nowarn_function, prop_get_set_depend_map/0}).
+-dialyzer({nowarn_function, prop_memo/0}).
+
 %%%%%%%%%%%%%%%%%%
 %%% Properties %%%
 %%%%%%%%%%%%%%%%%%
