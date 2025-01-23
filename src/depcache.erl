@@ -79,7 +79,7 @@
     data_table :: ets:tab()
 }).
 
--record(state,  {now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map()}).
+-record(state,  {now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map(), writers :: map() }).
 -record(meta,   {key :: key(), expire :: sec(), serial :: non_neg_integer(), depend :: dependencies()}).
 -record(depend, {key :: key(), serial :: non_neg_integer()}).
 
@@ -325,8 +325,8 @@ memo(Fun, Key, MaxAge, Dep, Server) ->
     Server :: depcache_server(),
     Result :: any().
 memo_key(Fun, Key, MaxAge, Dep, Server) ->
-    ExitWatcher = start_exit_watcher(Key, Server),
-    try
+    %%ExitWatcher = start_exit_watcher(Key, Server),
+    %%try
         try
             {Value1, MaxAge1, Dep1} = case apply_fun(Fun) of
                                           #memo{value=V, max_age=MA, deps=D} ->
@@ -348,28 +348,28 @@ memo_key(Fun, Key, MaxAge, Dep, Server) ->
             ?WITH_STACKTRACE(Class, R, S)
                 memo_send_errors(Key, {throw, R}, Server),
                 erlang:raise(Class, R, S)
-        end
-    after
-        stop_exit_watcher(ExitWatcher)
-    end.
+        end.
+    %%after
+    %%    stop_exit_watcher(ExitWatcher)
+    %%end.
 
 %% @private
 %% @doc Monitors the current process... 
 %% Sends premature_exit throw to depcache server when it detects one.
-start_exit_watcher(Key, Server) ->
-    Self = self(),
-    spawn(fun() ->
-                  Ref = monitor(process, Self),
-                  receive
-                      done ->
-                          erlang:demonitor(Ref);
-                      {'DOWN', Ref, process, Self, _Reason} ->
-                          memo_send_errors(Key, {throw, premature_exit}, Server)
-                  end
-          end).
-
-stop_exit_watcher(Pid) ->
-    Pid ! done.
+%%start_exit_watcher(Key, Server) ->
+%%    Self = self(),
+%%    spawn(fun() ->
+%%                  Ref = monitor(process, Self),
+%%                  receive
+%%                      done ->
+%%                          erlang:demonitor(Ref);
+%%                      {'DOWN', Ref, process, Self, _Reason} ->
+%%                          memo_send_errors(Key, {throw, premature_exit}, Server)
+%%                  end
+%%          end).
+%%
+%%stop_exit_watcher(Pid) ->
+%%    Pid ! done.
 
 %% @private
 %% @doc Execute the memo function
@@ -805,7 +805,8 @@ init(Config) ->
         tables = Tables,
         now=now_sec(),
         serial=0,
-        wait_pids=#{}
+        wait_pids=#{},
+        writers=#{}
     },
     timer:send_after(1000, tick),
     spawn_link(?MODULE,
@@ -940,6 +941,11 @@ handle_info(tick, State) ->
     erase_process_dict(),
     {noreply, State#state{now=now_sec()}};
 
+handle_info({'DOWN', Ref, process, _Pid, _Reason}, State) ->
+    io:fwrite(standard_error, "Down for ~p~n", [Ref]),
+
+    {noreply, State};
+
 handle_info(_Msg, State) -> 
     {noreply, State}.
 
@@ -1007,9 +1013,14 @@ handle_call_get_wait(Key, From, #state{tables = Tables} = State) ->
                     WaitPids = maps:update(Key, {MaxAge, [From|List]}, State#state.wait_pids),
                     {noreply, State#state{wait_pids=WaitPids}};
                 _ ->
+                    %% Monitor the sender as a writer for Key
+                    {Pid, _} = From,
+                    Ref = erlang:monitor(process, Pid),
+                    Writers = maps:put(Ref, Key, State#state.writers),
+
                     %% Nobody waiting or we hit a timeout, let next requestors wait for this caller.
                     WaitPids = maps:put(Key, {State#state.now+?MAX_GET_WAIT, []}, State#state.wait_pids),
-                    {reply, undefined, State#state{wait_pids=WaitPids}}
+                    {reply, undefined, State#state{wait_pids=WaitPids, writers=Writers}}
             end;
         {ok, _Value} = Found -> 
             {reply, Found, State}
