@@ -145,3 +145,28 @@ memo_raise_test() ->
         ?assertMatch({depcache_tests, raise_error, 0, _}, hd(S))
     end,
     ok.
+
+memo_premature_kill_test() ->
+    {ok, C} = depcache:start_link(#{}),
+
+    LongTask = fun() ->
+                       Fun = fun() ->
+                                     timer:sleep(500),
+                                     done 
+                             end,
+                       depcache:memo(Fun, premature_kill_test, C)
+               end,
+
+    Pid = spawn(LongTask),
+    timer:kill_after(250, Pid),
+    timer:sleep(50),
+    ?assertEqual({error, premature_exit}, depcache:get_wait(premature_kill_test, C)),
+
+    % Check if another process takes over processing in case of pre-mature exits 
+    Task = spawn(LongTask),
+    timer:kill_after(250, Task),
+    timer:sleep(50),
+    ?assertEqual(done, LongTask()),
+
+    ok.
+
