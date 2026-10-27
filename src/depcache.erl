@@ -1536,7 +1536,9 @@ cleanup_random(State, MetaTable, SlotNr, Now, Ct, Pid, Name, Callback) ->
                                     case rand_uniform(10) of
                                         1 ->
                                             callback(eviction, Name, Callback),
-                                            gen_server:cast(Pid, {flush, Key});
+                                            % Synchronous, so the next cache_full check sees the evicted
+                                            % entries gone and we don't keep evicting from a stale size.
+                                            gen_server:call(Pid, {flush, Key}, infinity);
                                         _  -> ok
                                     end;
                                 (flushed) -> flushed

@@ -170,3 +170,30 @@ memo_premature_kill_test() ->
 
     ok.
 
+
+cache_full_eviction_test() ->
+    {ok, C} = depcache:start_link(#{memory_max => 1}),
+    {ok, {_Meta, _Deps, Data}} = gen_server:call(C, get_tables),
+    MemoryMax = 1024 * 1024 div erlang:system_info(wordsize),
+    Count = fill_until_full(C, Data, MemoryMax, 0),
+
+    % Simulate a busy depcache server while the cleanup process finds the cache full
+    sys:suspend(C),
+    timer:sleep(1500),
+    sys:resume(C),
+    timer:sleep(500),
+    _ = sys:get_state(C),
+
+    % Only enough entries to get below memory_max should be evicted, not most of the cache
+    ?assert(ets:info(Data, memory) < MemoryMax),
+    ?assert(ets:info(Data, size) > Count div 2),
+    ok.
+
+fill_until_full(C, Data, MemoryMax, N) ->
+    case ets:info(Data, memory) >= MemoryMax of
+        true ->
+            N;
+        false ->
+            depcache:set({key, N}, lists:seq(1, 100), C),
+            fill_until_full(C, Data, MemoryMax, N + 1)
+    end.
