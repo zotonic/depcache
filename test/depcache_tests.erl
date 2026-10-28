@@ -592,8 +592,8 @@ raise_memo_exception(throw) -> throw(memo_failure).
 -define(META_LRU(Row), element(tuple_size(Row), Row)).
 
 lru_config_test() ->
-    ?assertError(badarg, depcache:start_link(#{lru => yes})),
-    ?assertError(badarg, depcache:start_link(#{lru_slots => 0})),
+    ?assertError(badarg, depcache:start_link(maps:from_list([{lru, yes}]))),
+    ?assertError(badarg, depcache:start_link(maps:from_list([{lru_slots, 0}]))),
     with_cache([{lru, true}, {lru_slots, 1024}], fun(C) ->
         ok = depcache:set(a, 1, C),
         ?assertEqual({ok, 1}, depcache:get(a, C))
