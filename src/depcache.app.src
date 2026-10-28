@@ -9,6 +9,6 @@
                  ]},
   {env, []},
   {maintainers, ["Arjan Scherpenisse", "Marc Worrell"]},
-  {licenses, ["Apache 2"]},
+  {licenses, ["Apache-2.0"]},
   {links, [{"Github", "https://github.com/zotonic/depcache"}]}
  ]}.
