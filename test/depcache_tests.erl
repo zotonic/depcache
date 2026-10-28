@@ -173,7 +173,7 @@ memo_premature_kill_test() ->
 
 cache_full_eviction_test() ->
     with_cache(#{memory_max => 1}, fun(C) ->
-        {ok, {_, _, Data}} = gen_server:call(C, get_tables),
+        {ok, {_, _, Data, _}} = gen_server:call(C, get_tables),
         [depcache:set({key, N}, lists:seq(1, 100), C) || N <- lists:seq(1, 2000)],
         ?assert(depcache:size(C)*erlang:system_info(wordsize) =< 1024*1024),
         ?assert(ets:info(Data, size) > 0)
@@ -191,7 +191,7 @@ dependency_update_test() ->
 
 dependency_reclamation_test() ->
     with_cache(#{}, fun(C) ->
-        {ok, {_, Deps, _}} = gen_server:call(C, get_tables),
+        {ok, {_, Deps, _, _}} = gen_server:call(C, get_tables),
         lists:foreach(fun(N) ->
             depcache:set(temp, value, 60, [{dep, N}], C)
         end, lists:seq(1, 1000)),
@@ -304,7 +304,7 @@ binary_eviction_test() ->
 
 cleanup_generation_test() ->
     with_cache(#{}, fun(C) ->
-        {ok, {Meta, _, _}} = gen_server:call(C, get_tables),
+        {ok, {Meta, _, _, _}} = gen_server:call(C, get_tables),
         depcache:set(key, old, C),
         [OldMeta] = ets:lookup(Meta, key),
         OldSerial = element(4, OldMeta),
@@ -479,7 +479,7 @@ adaptive_expiry_test_() ->
     {timeout, 10, fun() ->
         with_cache(#{}, fun(C) ->
             [depcache:set(N, value, 1, C) || N <- lists:seq(1, 10000)],
-            {ok, {_, _, Data}} = gen_server:call(C, get_tables),
+            {ok, {_, _, Data, _}} = gen_server:call(C, get_tables),
             await(fun() -> ets:info(Data, size) =:= 0 end,
                 erlang:monotonic_time(millisecond) + 6000)
         end)
@@ -584,3 +584,121 @@ capture_exception(Fun) ->
 raise_memo_exception(error) -> error(memo_failure);
 raise_memo_exception(exit) -> exit(memo_failure);
 raise_memo_exception(throw) -> throw(memo_failure).
+
+
+%% LRU eviction (the `lru' option).
+
+%% The lru field is the last field of the #meta record; the record is private to depcache.
+-define(META_LRU(Row), element(tuple_size(Row), Row)).
+
+lru_config_test() ->
+    ?assertError(badarg, depcache:start_link(maps:from_list([{lru, yes}]))),
+    ?assertError(badarg, depcache:start_link(maps:from_list([{lru_slots, 0}]))),
+    with_cache([{lru, true}, {lru_slots, 1024}], fun(C) ->
+        ok = depcache:set(a, 1, C),
+        ?assertEqual({ok, 1}, depcache:get(a, C))
+    end).
+
+lru_disabled_by_default_test() ->
+    with_cache(#{}, fun(C) ->
+        {ok, {Meta, _Deps, _Data, Lru}} = gen_server:call(C, get_tables),
+        ?assertEqual(undefined, Lru),
+        ok = depcache:set(a, 1, C),
+        [Row] = ets:lookup(Meta, a),
+        ?assertEqual(undefined, ?META_LRU(Row)),
+        ?assertEqual({ok, 1}, depcache:get(a, C))
+    end).
+
+lru_touch_on_read_test() ->
+    with_cache(#{lru => true, lru_slots => 1024}, fun(C) ->
+        {ok, {Meta, _Deps, _Data, Ref}} = gen_server:call(C, get_tables),
+        ok = depcache:set(a, 1, C),
+        [Row] = ets:lookup(Meta, a),
+        Slot = ?META_LRU(Row),
+        ?assert(is_integer(Slot) andalso Slot >= 1 andalso Slot =< 1024),
+        % A set is not an access: the slot stays untouched (0 in a fresh array)
+        ?assertEqual(0, atomics:get(Ref, Slot)),
+        % A read stamps the slot with the reader's clock
+        ?assertEqual({ok, 1}, depcache:get(a, C)),
+        T0 = atomics:get(Ref, Slot),
+        ?assert(abs(T0 - now_sec()) =< 1),
+        % A read a second later moves the stamp forward
+        timer:sleep(1100),
+        ?assertEqual({ok, 1}, depcache:get(a, C)),
+        T1 = atomics:get(Ref, Slot),
+        ?assert(T1 > T0),
+        % Setting the key again does not reset the stamp
+        ok = depcache:set(a, 2, C),
+        ?assertEqual(T1, atomics:get(Ref, Slot)),
+        % A miss or a flush does not touch anything
+        ok = depcache:flush(a, C),
+        ?assertEqual(undefined, depcache:get(a, C)),
+        ?assertEqual(T1, atomics:get(Ref, Slot))
+    end).
+
+lru_named_server_test() ->
+    {ok, C} = depcache:start_link(lru_named_test, #{lru => true, lru_slots => 1024}),
+    try
+        ok = depcache:set(a, 1, lru_named_test),
+        ?assertEqual({ok, 1}, depcache:get(a, lru_named_test)),
+        % Readers of a named server find the array without asking the server
+        {_Meta, _Deps, _Data, Ref} = erlang:element(3, erlang:get(depcache_tables)),
+        ?assert(Ref =/= undefined),
+        {ok, {_, _, _, Ref}} = gen_server:call(C, get_tables)
+    after
+        depcache:flush_process_dict(),
+        erlang:erase(depcache_tables),
+        gen_server:stop(C)
+    end,
+    % The array is unpublished when the server stops
+    ?assertEqual(undefined, persistent_term:get({depcache, lru_named_test, lru}, undefined)).
+
+lru_eviction_keeps_hot_keys_test_() ->
+    {timeout, 30, fun lru_eviction_keeps_hot_keys/0}.
+
+lru_eviction_keeps_hot_keys() ->
+    with_cache(#{memory_max => 1, lru => true}, fun(C) ->
+        {ok, {Meta, _Deps, _Data, _Lru}} = gen_server:call(C, get_tables),
+        MemoryMax = 1024 * 1024 div erlang:system_info(wordsize),
+        Pressure = MemoryMax * 9 div 10,
+
+        % Fill well below the pressure point with cold entries that are never
+        % read, then add a few hot ones
+        ColdCount = fill_until(C, Pressure * 7 div 10, 0),
+        HotKeys = [ {hot, N} || N <- lists:seq(1, 10) ],
+        [ depcache:set(K, lists:seq(1, 100), C) || K <- HotKeys ],
+        ?assert(depcache:size(C) < Pressure),
+
+        % A second later, read the hot keys so they have an access time
+        timer:sleep(1100),
+        [ ?assertMatch({ok, _}, depcache:get(K, C)) || K <- HotKeys ],
+
+        % Push the cache to its limit with more keys that are set but never
+        % read, like a scan over many one-off pages. Admission rejects writes
+        % past the budget, and the cleanup process evicts until the cache is
+        % back under the pressure point.
+        Before = ets:info(Meta, size),
+        _ = fill_until(C, MemoryMax, ColdCount),
+        await(fun() -> depcache:size(C) < Pressure end),
+
+        ?assert(ets:info(Meta, size) < Before + 1500),
+        Evicted = [ N || N <- lists:seq(0, ColdCount - 1), depcache:get({key, N}, C) =:= undefined ],
+        ?assert(length(Evicted) > 0),
+        % The least recently used entries went first, the hot ones all survived.
+        % With random eviction each hot key would have had roughly one chance
+        % in ten per sweep of being evicted.
+        [ ?assertMatch({ok, _}, depcache:get(K, C)) || K <- HotKeys ]
+    end).
+
+fill_until(C, Words, N) ->
+    case depcache:size(C) >= Words orelse N > 20000 of
+        true ->
+            N;
+        false ->
+            depcache:set({key, N}, lists:seq(1, 100), C),
+            fill_until(C, Words, N + 1)
+    end.
+
+now_sec() ->
+    {M, S, _} = os:timestamp(),
+    M * 1000000 + S.

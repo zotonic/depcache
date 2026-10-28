@@ -81,8 +81,19 @@
     memory_table :: ets:tab()
 }).
 
--record(state,  {now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map(), writers :: map(), cleanup_pid :: pid(), memory_max :: non_neg_integer(), pressured = false :: boolean() }).
--record(meta,   {key :: key(), expire :: sec(), serial :: non_neg_integer(), depend :: dependencies(), binary_bytes = 0 :: non_neg_integer(), memory_words = 0 :: non_neg_integer()}).
+%% LRU bookkeeping. Every depcache with LRU enabled has one atomics array
+%% (`lru_ref()'); every entry's `#meta' row holds the slot in that array that
+%% stores the entry's last access time (`lru()'). Only the integer slot is kept
+%% in the row: copying a magic ref out of ETS on every read bumps a shared
+%% refcount, which serializes readers. Readers get the ref once per process,
+%% through `get_tables/1'. Both are `undefined' when LRU eviction is disabled.
+-type lru_ref() :: undefined | atomics:atomics_ref().
+-type lru() :: undefined | pos_integer().
+
+-record(state,  {now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map(), writers :: map(), cleanup_pid :: pid(), memory_max :: non_neg_integer(), pressured = false :: boolean(),
+                 lru = undefined :: undefined | {atomics:atomics_ref(), pos_integer()} }).
+-record(meta,   {key :: key(), expire :: sec(), serial :: non_neg_integer(), depend :: dependencies(), binary_bytes = 0 :: non_neg_integer(), memory_words = 0 :: non_neg_integer(),
+                 lru = undefined :: lru()}).
 -record(depend, {key :: key(), serial :: non_neg_integer(), refs = 0 :: non_neg_integer()}).
 
 -record(cleanup_state, {
@@ -90,18 +101,24 @@
     tables :: #tables{},
     name :: atom(),
     memory_max :: non_neg_integer(),
-    callback :: callback() | undefined
+    callback :: callback() | undefined,
+    lru = undefined :: lru_ref()
 }).
 
 -type tables() :: #tables{meta_table :: ets:tab(), deps_table :: ets:tab(), data_table :: ets:tab(), memory_table :: ets:tab()}.
 -type state() :: #state{now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map(), writers :: map()}.
 -type depend() :: #depend{key :: key(), serial :: non_neg_integer()}.
--type cleanup_state() :: #cleanup_state{pid :: pid(), tables :: tables(), name :: atom(), memory_max :: non_neg_integer(), callback :: callback() | undefined}.
+-type cleanup_state() :: #cleanup_state{pid :: pid(), tables :: tables(), name :: atom(), memory_max :: non_neg_integer(),
+                                        callback :: callback() | undefined, lru :: lru_ref()}.
 -type config() :: config_map() | config_proplist().
 -type config_map() :: #{memory_max => non_neg_integer() | undefined,
-                        callback => callback() | undefined}.
+                        callback => callback() | undefined,
+                        lru => boolean(),
+                        lru_slots => pos_integer()}.
 -type config_proplist() :: list({memory_max, non_neg_integer | undefined}
-                              | {callback, callback() | undefined}).
+                              | {callback, callback() | undefined}
+                              | {lru, boolean()}
+                              | {lru_slots, pos_integer()}).
 
 
 %% @doc Start a depcache process.
@@ -115,6 +132,11 @@
 %%   <dd>depcache event callback</dd>
 %%   <dt>`memory_max => MaxMemoryInMB'</dt>
 %%   <dd>number of MB to limit depcache size at</dd>
+%%   <dt>`lru => boolean()'</dt>
+%%   <dd>evict least recently used entries when the cache is full, instead of
+%%       random entries. Default `false'. See {@link start_link/2}.</dd>
+%%   <dt>`lru_slots => Count'</dt>
+%%   <dd>number of slots in the LRU access-time array, default 262144. See {@link start_link/2}.</dd>
 %% </dl>
 %% @param Config configuration options
 %% @returns Result of starting gen_server item.
@@ -140,6 +162,22 @@ start_link(Config) ->
 %%   <dd>depcache event callback</dd>
 %%   <dt>`memory_max => MaxMemoryInMB'</dt>
 %%   <dd>number of MB to limit depcache size at</dd>
+%%   <dt>`lru => boolean()'</dt>
+%%   <dd>Default `false'. When the cache is full, evict the least recently
+%%       used entries instead of random ones. This is an approximate LRU: every
+%%       cache hit stores the current time (in seconds) in an atomics slot
+%%       chosen by hashing the key, and the cleanup process evicts the oldest
+%%       tenth of every batch it sweeps while the cache stays full.
+%%       The cost per cache hit is one lock-free atomic read, plus a store
+%%       when the second has changed, about 50ns in total. Setting an
+%%       entry does not count as an access: entries that are never read after
+%%       being set are evicted first, so a scan over many one-off keys does
+%%       not push out entries that are actually used.</dd>
+%%   <dt>`lru_slots => Count'</dt>
+%%   <dd>Number of slots in the LRU access-time array, default 262144 (2^18, 2MB).
+%%       Each slot takes 8 bytes. Keys that hash to the same slot share an
+%%       access time, which only delays the eviction of the colder key. Aim for
+%%       at least four slots per cached entry.</dd>
 %% </dl>
 %% @param Name of process
 %% @param Config configuration options
@@ -208,6 +246,10 @@ ensure_valid_config(Config) ->
 		%%         that single argument was given, which is ambiguous and
 		%%         should be discouraged
                 Acc;
+            (lru, Lru, Acc) when is_boolean(Lru) ->
+                Acc;
+            (lru_slots, Slots, Acc) when is_integer(Slots), Slots > 0 ->
+                Acc;
             (_, _, _) ->
                 error(badarg)
         end,
@@ -232,6 +274,13 @@ ensure_valid_config(Config) ->
 
 % Number of slots visited for each gc iteration.
 -define(CLEANUP_BATCH, 100).
+
+% Default number of slots in the LRU access-time array (2^18, 8 bytes each).
+-define(LRU_SLOTS, 262144).
+
+% Fraction of a cleanup batch that is evicted per sweep when the cache is full.
+% One in ten entries, for both random and LRU eviction.
+-define(EVICT_FRACTION, 10).
 
 % Number of entries we keep in the local process dictionary for fast lookups.
 -define(PROCESS_DICT_THRESHOLD, 10000).
@@ -617,7 +666,8 @@ size(Server) ->
 
 
 %% @private
-%% @doc Fetch the depcache tables.
+%% @doc Fetch the depcache tables and the LRU atomics array (or `undefined'),
+%% cached in the process dictionary.
 
 -spec get_tables( Server ) -> Result when
     Server :: depcache_server(),
@@ -648,7 +698,8 @@ get_tables1(Server) when is_atom(Server) ->
     Tables = {
         ?NAMED_TABLE(Server, ?META_TABLE_PREFIX),
         ?NAMED_TABLE(Server, ?DEPS_TABLE_PREFIX),
-        ?NAMED_TABLE(Server, ?DATA_TABLE_PREFIX)
+        ?NAMED_TABLE(Server, ?DATA_TABLE_PREFIX),
+        persistent_term:get({?MODULE, Server, lru}, undefined)
     },
     erlang:put(depcache_tables, {ok, Server, Tables}),
     Tables.
@@ -683,8 +734,8 @@ get_process_dict(Key, Server) ->
     Server :: depcache_server(),
     Result :: undefined | {ok, any()}.
 get_ets(Key, Server) ->
-    {MetaTable, DepsTable, DataTable} = get_tables(Server),
-    try get_concurrent(Key, get_now(), MetaTable, DepsTable, DataTable) of
+    {MetaTable, DepsTable, DataTable, LruRef} = get_tables(Server),
+    try get_concurrent(Key, get_now(), MetaTable, DepsTable, DataTable, LruRef) of
         {flush, Serial} ->
             flush_process_dict(),
             gen_server:call(Server, {get_checked, Key, Serial});
@@ -806,6 +857,14 @@ init(Config) ->
     MemoryTable = ets:new(memory_table, [set, protected]),
     ets:insert(MemoryTable, {binary_bytes, 0}),
     Tables = Tables0#tables{memory_table = MemoryTable},
+    Lru = case maps:get(lru, Config, false) of
+              true ->
+                  Slots = maps:get(lru_slots, Config, ?LRU_SLOTS),
+                  {atomics:new(Slots, [{signed, false}]), Slots};
+              false ->
+                  undefined
+          end,
+    lru_publish(maps:get(name, Config, none), Lru),
     timer:send_after(1000, tick),
     CleanupPid = spawn_link(?MODULE,
                cleanup,
@@ -814,7 +873,8 @@ init(Config) ->
                    tables = Tables,
                    name = maps:get(name, Config, none),
                    memory_max = MemoryMaxWords,
-                   callback = maps:get(callback, Config, undefined)
+                   callback = maps:get(callback, Config, undefined),
+                   lru = lru_ref(Lru)
                }]),
     {ok, #state{
         tables=Tables,
@@ -823,7 +883,8 @@ init(Config) ->
         wait_pids=#{},
         writers=#{},
         cleanup_pid=CleanupPid,
-        memory_max=MemoryMaxWords
+        memory_max=MemoryMaxWords,
+        lru=Lru
     }}.
 
 %% @private
@@ -841,7 +902,7 @@ init(Config) ->
     Meta_table :: ets:tab(),
     Deps_table :: ets:tab(),
     Data_table :: ets:tab(),
-    Result :: {reply, {ok, {Meta_table, Deps_table, Data_table}}, State};
+    Result :: {reply, {ok, {Meta_table, Deps_table, Data_table, lru_ref()}}, State};
 (Request, From, State) -> Result when
     Request :: get_wait,
     From :: {pid(), gen_server:reply_tag()},
@@ -1001,11 +1062,49 @@ handle_info(_Msg, State) ->
     State :: state(),
     Result :: ok.
 
-terminate(_Reason, #state{cleanup_pid=Pid}) ->
+terminate(_Reason, #state{cleanup_pid=Pid, tables=#tables{meta_table=MetaTable}}) ->
     %% A normal server exit does not terminate linked processes automatically.
     unlink(Pid),
     exit(Pid, shutdown),
+    case ets:info(MetaTable, named_table) of
+        true -> lru_publish(lru_table_name(MetaTable), undefined);
+        _ -> ok
+    end,
     ok.
+
+
+%% @private
+%% @doc Make the LRU atomics array of a named depcache available to reader
+%% processes, which pick it up in `get_tables1/1'. Erases a stale array left
+%% by a previous incarnation when LRU is disabled.
+
+-spec lru_publish(Name, Lru) -> ok when
+	Name :: atom(),
+	Lru :: undefined | {atomics:atomics_ref(), pos_integer()}.
+lru_publish(none, _Lru) ->
+    ok;
+lru_publish(Name, undefined) ->
+    _ = persistent_term:erase({?MODULE, Name, lru}),
+    ok;
+lru_publish(Name, {Ref, _Slots}) ->
+    persistent_term:put({?MODULE, Name, lru}, Ref).
+
+
+%% @private
+%% @doc The depcache name from its named meta table.
+
+-spec lru_table_name(MetaTable) -> atom() when
+	MetaTable :: atom().
+lru_table_name(MetaTable) ->
+    [?META_TABLE_PREFIX, $: | Name] = atom_to_list(MetaTable),
+    list_to_atom(Name).
+
+
+%% @private
+-spec lru_ref(Lru) -> lru_ref() when
+	Lru :: undefined | {atomics:atomics_ref(), pos_integer()}.
+lru_ref(undefined) -> undefined;
+lru_ref({Ref, _Slots}) -> Ref.
 
 
 %% @doc This function is called by a gen_server process when it is to update
@@ -1031,9 +1130,9 @@ code_change(_OldVersion, State, _Extra) -> {ok, State}.
 	Meta_table :: ets:tab(),
 	Deps_table :: ets:tab(),
 	Data_table :: ets:tab(),
-	Result :: {reply, {ok, {Meta_table, Deps_table, Data_table}}, State}.
-handle_call_get_tables(#state{tables = Tables} = State) ->
-    {reply, {ok, {Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table}}, State}.
+	Result :: {reply, {ok, {Meta_table, Deps_table, Data_table, lru_ref()}}, State}.
+handle_call_get_tables(#state{tables = Tables, lru = Lru} = State) ->
+    {reply, {ok, {Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table, lru_ref(Lru)}}, State}.
 
 
 %% @private
@@ -1049,7 +1148,8 @@ handle_call_get_tables(#state{tables = Tables} = State) ->
 	Result :: {reply, Reply, state()} | {noreply, state()},
 	Reply :: undefined | {ok, term()}.
 handle_call_get_wait(Key, From, #state{tables = Tables} = State) ->
-    case get_concurrent(Key, State#state.now, Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table) of
+    case get_concurrent(Key, State#state.now, Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table,
+                        lru_ref(State#state.lru)) of
         NotFound when is_tuple(NotFound), element(1, NotFound) =:= flush; NotFound =:= undefined ->
             case NotFound of
                 {flush, Serial} -> flush_if_current(Key, Serial, State);
@@ -1168,9 +1268,15 @@ handle_call_set({Key, Data, MaxAge, Depend, Bytes, Words}, #state{tables=Tables}
             update_binary_bytes(Bytes - Old#meta.binary_bytes, Tables),
             %% Keep the old entry visible until its replacement is published.
             ets:insert(Tables#tables.data_table, {Key, Serial, Data}),
+            %% The LRU slot is deliberately not stamped here: an entry only
+            %% gets an access time once it is read. Entries never read after
+            %% being set rank as the oldest, so a scan over many one-off keys
+            %% cannot push out entries that are in use. Stamping here would
+            %% also clobber the access time of any key sharing the slot.
             ets:insert(Tables#tables.meta_table, #meta{key=Key,
                 expire=now_sec()+MaxAge, serial=Serial, depend=Depend,
-                binary_bytes=Bytes, memory_words=Words}),
+                binary_bytes=Bytes, memory_words=Words,
+                lru=lru_slot(Key, State)}),
             release_dependencies(Removed, Tables);
         false -> remove_entry(Key, Tables)
     end,
@@ -1271,7 +1377,8 @@ incr(N) -> N+1.
 	Result :: undefined | {ok, Value},
 	Value :: term().
 get_in_depcache_ets(Key, #state{tables = Tables} = State) ->
-    case get_concurrent(Key, State#state.now, Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table) of
+    case get_concurrent(Key, State#state.now, Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table,
+                        lru_ref(State#state.lru)) of
         {flush, Serial} ->
             flush_if_current(Key, Serial, State),
             undefined;
@@ -1285,24 +1392,25 @@ get_in_depcache_ets(Key, #state{tables = Tables} = State) ->
 %% @private
 %% @doc Get a value from the depcache.  Called by the depcache and other processes.
 
--spec get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) -> Result when
+-spec get_concurrent(Key, Now, MetaTable, DepsTable, DataTable, LruRef) -> Result when
 	Key :: key(),
 	Now :: sec(),
 	MetaTable :: ets:tab(),
 	DepsTable :: ets:tab(),
 	DataTable :: ets:tab(),
+	LruRef :: lru_ref(),
 	Result :: retry | {flush, non_neg_integer()} | undefined | {ok, term()}.
-get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) ->
+get_concurrent(Key, Now, MetaTable, DepsTable, DataTable, LruRef) ->
     case ets:lookup(MetaTable, Key) of
         [] ->
             undefined;
-        [#meta{serial=Serial, expire=Expire, depend=Depend}] ->
-            get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend)
+        [#meta{serial=Serial, expire=Expire, depend=Depend, lru=Slot}] ->
+            get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend, {LruRef, Slot})
     end.
 
 %% @hidden
 
--spec get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend) -> Result when
+-spec get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend, Lru) -> Result when
 	Key :: key(),
 	Now :: sec(),
 	DepsTable :: ets:tab(),
@@ -1310,26 +1418,29 @@ get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) ->
 	Serial :: non_neg_integer(),
 	Expire :: sec(),
 	Depend :: dependencies(),
+	Lru :: {lru_ref(), lru()},
 	Result :: retry | {flush, non_neg_integer()} | undefined | {ok, term()}.
-get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend) ->
+get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend, Lru) ->
 	%% Check expiration
 	case Expire >= Now of
 		false ->
 			{flush, Serial};
 		true ->
-			get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend)
+			get_concurrent_check_depend(Key, Now, DepsTable, DataTable, Serial, Depend, Lru)
 	end.
 
 %% @hidden
 
--spec get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend) -> Result when
+-spec get_concurrent_check_depend(Key, Now, DepsTable, DataTable, Serial, Depend, Lru) -> Result when
 	Key :: key(),
+	Now :: sec(),
 	DepsTable :: ets:tab(),
 	DataTable :: ets:tab(),
 	Serial :: non_neg_integer(),
 	Depend :: dependencies(),
+	Lru :: {lru_ref(), lru()},
 	Result :: retry | {flush, non_neg_integer()} | undefined | {ok, term()}.
-get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend) ->
+get_concurrent_check_depend(Key, Now, DepsTable, DataTable, Serial, Depend, Lru) ->
 	%% Check dependencies
 	case check_depend(Serial, Depend, DepsTable) of
 		false ->
@@ -1337,10 +1448,62 @@ get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend) ->
 		true ->
 			case ets:lookup(DataTable, Key) of
 				[] -> undefined;
-				[{_Key,Serial,Data}] -> {ok, Data};
+				[{_Key,Serial,Data}] ->
+					lru_touch(Lru, Now),
+					{ok, Data};
                 [_Replacement] -> retry
 			end
 	end.
+
+
+%% @private
+%% @doc The LRU slot for a key: the index in the atomics array that the key
+%% hashes to. `undefined' when LRU eviction is disabled.
+
+-spec lru_slot(Key, State) -> Result when
+	Key :: key(),
+	State :: state(),
+	Result :: lru().
+lru_slot(_Key, #state{lru = undefined}) ->
+    undefined;
+lru_slot(Key, #state{lru = {_Ref, Slots}}) ->
+    erlang:phash2(Key, Slots) + 1.
+
+
+%% @private
+%% @doc Record an access to an entry. Called from reader processes. A no-op
+%% when LRU eviction is disabled, or when the reader has no array ref (for
+%% example a process that cached the tables before LRU was enabled).
+%% The slot is read first and only written when the second has changed:
+%% a plain read leaves the cache line shared between cores, whereas every
+%% store would invalidate it, and hot keys are read many times a second.
+
+-spec lru_touch(Lru, Now) -> ok when
+	Lru :: {lru_ref(), lru()},
+	Now :: sec().
+lru_touch({undefined, _Slot}, _Now) ->
+    ok;
+lru_touch({_Ref, undefined}, _Now) ->
+    ok;
+lru_touch({Ref, Slot}, Now) ->
+    case atomics:get(Ref, Slot) of
+        Now -> ok;
+        _ -> atomics:put(Ref, Slot, Now)
+    end.
+
+
+%% @private
+%% @doc The last access time of an entry, 0 when unknown.
+
+-spec lru_last_access(LruRef, Slot) -> sec() when
+	LruRef :: lru_ref(),
+	Slot :: lru().
+lru_last_access(undefined, _Slot) ->
+    0;
+lru_last_access(_Ref, undefined) ->
+    0;
+lru_last_access(Ref, Slot) ->
+    atomics:get(Ref, Slot).
 
 
 %% @private
@@ -1556,7 +1719,8 @@ cleanup(#cleanup_state{pid=Pid, tables=Tables}=State, Slot, _Now, Mode, SweepLim
         max(?CLEANUP_BATCH, min(10000, ets:info(Tables#tables.meta_table, size) div 10))),
     Limit = case Mode1 of normal -> NormalLimit; cache_full -> ?CLEANUP_BATCH end,
     Deadline = erlang:monotonic_time(microsecond) + 2000,
-    {Next, Expired, Evicted} = cleanup_scan(State, Slot, now_sec(), Mode1, Limit, Deadline, [], []),
+    {Next, Expired, Candidates} = cleanup_scan(State, Slot, now_sec(), Mode1, Limit, Deadline, [], []),
+    Evicted = cleanup_select(State, Candidates),
     lists:foreach(fun(_) -> callback(eviction, State#cleanup_state.name,
         State#cleanup_state.callback) end, Evicted),
     flush_batches(Pid, Expired ++ Evicted, [], 0),
@@ -1585,12 +1749,17 @@ cleanup_scan(#cleanup_state{tables=Tables}=State, Slot, Now, Mode, Left, Deadlin
             case Entries of
                 '$end_of_table' -> {0, Expired, Evicted};
                 _ ->
+                    LruRef = State#cleanup_state.lru,
                     {Expired1, Evicted1} = lists:foldl(fun
-                        (#meta{key=Key, serial=Serial, expire=Expire, depend=Deps}, {Es, Vs}) ->
+                        (#meta{key=Key, serial=Serial, expire=Expire, depend=Deps, lru=LruSlot}, {Es, Vs}) ->
                             case Expire < Now orelse not check_depend(Serial, Deps, Tables#tables.deps_table) of
                                 true -> {[{Key, Serial}|Es], Vs};
+                                false when Mode =:= cache_full, LruRef =/= undefined ->
+                                    %% Every live entry is a candidate; cleanup_select/2
+                                    %% keeps the least recently used tenth of the batch.
+                                    {Es, [{lru_last_access(LruRef, LruSlot), Key, Serial}|Vs]};
                                 false when Mode =:= cache_full ->
-                                    case rand_uniform(10) of
+                                    case rand_uniform(?EVICT_FRACTION) of
                                         1 -> {Es, [{Key, Serial}|Vs]};
                                         _ -> {Es, Vs}
                                     end;
@@ -1600,6 +1769,23 @@ cleanup_scan(#cleanup_state{tables=Tables}=State, Slot, Now, Mode, Left, Deadlin
                     cleanup_scan(State, Slot+1, Now, Mode, Left-1, Deadline, Expired1, Evicted1)
             end
     end.
+
+%% @private
+%% Pick the entries to evict from a scanned batch. Random eviction already
+%% picked them during the scan. LRU eviction gets every live entry of the
+%% batch with its last access time and keeps the oldest tenth, oldest first.
+%% This is sampled LRU, as Redis does it: the batch is sorted, never the
+%% whole table or the atomics array. At least one entry is evicted so that a
+%% table with fewer than ?EVICT_FRACTION entries per batch still shrinks.
+-spec cleanup_select(cleanup_state(), list()) -> list({key(), non_neg_integer()}).
+cleanup_select(#cleanup_state{lru=undefined}, Evicted) ->
+    Evicted;
+cleanup_select(#cleanup_state{}, []) ->
+    [];
+cleanup_select(#cleanup_state{}, Candidates) ->
+    ByAge = lists:sort(Candidates),
+    Count = max(1, length(ByAge) div ?EVICT_FRACTION),
+    [ {Key, Serial} || {_LastAccess, Key, Serial} <- lists:sublist(ByAge, Count) ].
 
 -ifdef(rand_only).
 rand_uniform(N) ->

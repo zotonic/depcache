@@ -25,6 +25,29 @@ Start a depcache server like this:
 
 Now you can get and set values using the returned `Server` pid.
 
+Options
+-------
+
+The config is a map or proplist with these keys:
+
+- `memory_max`: size limit of the cached data in MB, default 100. When the
+  cache grows past it, the cleanup process evicts entries until it fits.
+- `callback`: an `{Module, Function, Args}` called on cache events, such as
+  an eviction.
+- `lru`: default `false`. When `true`, a full cache evicts the least recently
+  used entries instead of random ones. Every cache hit stores the current
+  time (seconds) into an atomics slot chosen by hashing the key, which costs
+  about 50ns: one lock-free atomic read, plus a store when the second has
+  changed. Setting a key is not an access, so entries that are never read
+  again are evicted first and a scan over many one-off keys cannot push out
+  entries that are in use. While the cache is full the cleanup process
+  evicts the oldest tenth of every batch of entries it sweeps (sampled LRU,
+  as Redis does it), so the array is never scanned. Only useful if the cache
+  actually reaches `memory_max`.
+- `lru_slots`: number of slots in the LRU access-time array, default 262144
+  (2MB, 8 bytes per slot). Keys that hash to the same slot share an access
+  time. Use at least four slots per cached entry.
+
 
 ## Memoization keys and failures
 
@@ -62,9 +85,10 @@ Insertion admission reserves an estimated footprint before storing an entry.
 Oversized entries and entries that cannot fit are not retained; `set` still
 returns `ok`, invalidates the old value and its dependents, and delivers the new
 value to memo waiters. Thus a successful `set` does not guarantee a subsequent
-cache hit. A zero budget disables retention. Random eviction wakes at 90% of
-the budget and processes bounded batches; expiry sweeps scale with table size
-and have a time budget. Fixed table overhead and hash-table allocation mean
+cache hit. A zero budget disables retention. Eviction (random by default,
+least recently used with the `lru` option) wakes at 90% of the budget and
+processes bounded batches; expiry sweeps scale with table size and have a
+time budget. Fixed table overhead and hash-table allocation mean
 this is not a strict process or VM memory limit.
 
 Ordinary `get/2` lookups use ETS directly for both PID and named servers.
