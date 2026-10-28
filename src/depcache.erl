@@ -57,7 +57,8 @@
 -endif.
 
 -type mfargs() :: {module(), atom(), list()}.
--type memo_fun() :: function() | mfargs() | {module(), atom()}.
+-type memo_fun() :: fun(() -> any()) | mfargs() | {module(), atom()}.
+-type exception_reply() :: {exception, error | exit | throw, term(), list()}.
 -type depcache_server() :: pid() | atom().
 -type sec() :: non_neg_integer().
 -type max_age_secs() :: sec().
@@ -303,7 +304,10 @@ memo(Fun, Key, MaxAge, Dep, Server) ->
     case ?MODULE:get_wait(Key1, Server) of
         {ok, Value} ->
             Value;
+        {exception, Class, Reason, Stack} ->
+            erlang:raise(Class, Reason, Stack);
         {throw, R} ->
+            %% Accept replies from computations started by an older version.
             throw(R);
         undefined ->
             memo_key(Fun, Key1, MaxAge, Dep, Server);
@@ -344,7 +348,7 @@ memo_key(Fun, Key, MaxAge, Dep, Server) ->
         Value1
     catch
         ?WITH_STACKTRACE(Class, R, S)
-            memo_send_errors(Key, {throw, R}, Server),
+            memo_send_errors(Key, {exception, Class, R, S}, Server),
             erlang:raise(Class, R, S)
     end.
 
@@ -358,18 +362,16 @@ apply_fun(Fun) when is_function(Fun) -> Fun().
 
 
 %% @private
-%% @doc Calculate the key used for memo functions.
-%% Returns cached value.
-
--spec memo_key( Fun ) -> Result when
-    Fun :: memo_fun(),
-    Result :: tuple().
-memo_key(MFA) when is_function(MFA) ->
-    MFA();
-memo_key({M,F,A}) -> 
+%% @doc Derive a key without executing the computation. Context records in MFA
+%% arguments are deliberately excluded, allowing reuse across contexts. Callers
+%% must provide an explicit key when the result depends on the context.
+-spec memo_key(memo_fun()) -> key().
+memo_key(Fun) when is_function(Fun, 0) ->
+    Fun;
+memo_key({M,F,A}) ->
     WithoutContext = lists:filter(fun(T) when is_tuple(T) andalso element(1, T) =:= context -> false; (_) -> true end, A),
     {M,F,WithoutContext};
-memo_key({M,F}) -> 
+memo_key({M,F}) ->
     {M,F}.
 
 
@@ -400,7 +402,7 @@ memo_send_replies(Key, Value, Server) ->
 
 -spec memo_send_errors( Key, Exception, Server ) -> Result when
     Key :: key(),
-    Exception :: {throw, any()},
+    Exception :: exception_reply(),
     Server :: depcache_server(),
     Result :: list().
 memo_send_errors(Key, Exception, Server) ->
@@ -467,7 +469,7 @@ set(Key, Data, MaxAge, Depend, Server) ->
 -spec get_wait( Key, Server ) -> Result when
     Key :: key(),
     Server :: depcache_server(),
-    Result :: {ok, any()} | undefined | {throw, term()} | {error, premature_exit}.
+    Result :: {ok, any()} | undefined | exception_reply() | {throw, term()} | {error, premature_exit}.
 get_wait(Key, Server) ->
     case get_process_dict(Key, Server) of
         NoValue when NoValue =:= undefined orelse NoValue =:= depcache_disabled ->

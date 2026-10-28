@@ -26,6 +26,26 @@ Start a depcache server like this:
 Now you can get and set values using the returned `Server` pid.
 
 
+## Memoization keys and failures
+
+When no explicit key is supplied, `memo` uses the zero-argument function term
+(including its captured environment), or a key derived from the
+`{Module, Function, Args}` / `{Module, Function}` tuple. Deriving a key never
+executes the function.
+
+For MFA calls, top-level argument tuples tagged `context` are deliberately
+excluded from the implicit key, allowing results to be shared across contexts.
+The function still receives the original arguments. If its result depends on
+context fields (such as user, site, or language), supply an explicit key that
+includes those fields. Other arguments, including nested context tuples, remain
+part of the implicit key.
+
+Concurrent `memo` callers receive the computation's original exception class,
+reason, and stack trace. Direct `get_wait/2` callers receive failed computations
+as `{exception, Class, Reason, Stack}` instead of the older `{throw, Reason}`
+reply that discarded the class and stack trace.
+
+
 ## Invalidation and memory limits
 
 Setting or flushing a dependency key invalidates entries that depend on it.

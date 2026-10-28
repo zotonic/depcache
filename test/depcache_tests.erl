@@ -484,3 +484,103 @@ adaptive_expiry_test_() ->
                 erlang:monotonic_time(millisecond) + 6000)
         end)
     end}.
+
+implicit_fun_memo_test() ->
+    with_cache(#{}, fun(C) ->
+        put(implicit_fun_calls, 0),
+        Fun = fun() -> increase(implicit_fun_calls) end,
+        ?assertEqual(1, depcache:memo(Fun, C)),
+        ?assertEqual(1, depcache:memo(Fun, C)),
+        ?assertEqual(1, get(implicit_fun_calls)),
+        ?assertEqual({ok, 1}, depcache:get(Fun, C)),
+        depcache:flush(Fun, C),
+        ?assertEqual(2, depcache:memo(Fun, C)),
+        ?assertEqual(2, erase(implicit_fun_calls)),
+        ?assertEqual({monitors, []}, process_info(C, monitors))
+    end).
+
+captured_fun_keys_test() ->
+    with_cache(#{}, fun(C) ->
+        A = captured_fun(alice),
+        B = captured_fun(bob),
+        ?assertEqual(alice, depcache:memo(A, C)),
+        ?assertEqual(bob, depcache:memo(B, C)),
+        ?assertEqual({ok, alice}, depcache:get(A, C)),
+        ?assertEqual({ok, bob}, depcache:get(B, C))
+    end).
+
+captured_fun(Value) ->
+    fun() -> Value end.
+
+context_memo_keys_test() ->
+    with_cache(#{}, fun(C) ->
+        A = {erlang, element, [2, {context, alice}]},
+        B = {erlang, element, [2, {context, bob}]},
+        %% Context arguments are passed to the function but excluded from the key.
+        ?assertEqual(alice, depcache:memo(A, C)),
+        ?assertEqual(alice, depcache:memo(B, C)),
+        ?assertEqual({ok, alice}, depcache:get({erlang, element, [2]}, C)),
+        %% Context-dependent results require explicit keys.
+        ?assertEqual(alice, depcache:memo(A, {user, alice}, 60, C)),
+        ?assertEqual(bob, depcache:memo(B, {user, bob}, 60, C))
+    end).
+
+memo_exception_waiters_test_() ->
+    [{atom_to_list(Class), fun() -> memo_exception_waiters(Class) end}
+        || Class <- [error, exit, throw]].
+
+memo_exception_waiters(Class) ->
+    with_cache(#{}, fun(C) ->
+        Parent = self(),
+        Key = {exception, Class},
+        {Writer, WriterRef} = spawn_monitor(fun() ->
+            Result = capture_exception(fun() ->
+                depcache:memo(fun() ->
+                    Parent ! writer_started,
+                    receive fail -> raise_memo_exception(Class) end
+                end, Key, C)
+            end),
+            Parent ! {writer_result, Result}
+        end),
+        receive writer_started -> ok after 1000 -> error(writer_timeout) end,
+        {Waiter, WaiterRef} = spawn_monitor(fun() ->
+            Result = capture_exception(fun() ->
+                depcache:memo(fun() -> unexpected end, Key, C)
+            end),
+            Parent ! {waiter_result, Result}
+        end),
+        {RawWaiter, RawRef} = spawn_monitor(fun() ->
+            Parent ! {raw_result, depcache:get_wait(Key, C)}
+        end),
+        await(fun() ->
+            {_, Waiting, _} = maps:get(Key, element(5, sys:get_state(C))),
+            length(Waiting) =:= 2
+        end),
+        Writer ! fail,
+        Original = receive {writer_result, R} -> R after 1000 -> error(writer_timeout) end,
+        ?assertMatch({exception, Class, memo_failure, [_|_]}, Original),
+        receive {waiter_result, Received} -> ?assertEqual(Original, Received)
+        after 1000 -> error(waiter_timeout)
+        end,
+        receive {raw_result, Raw} -> ?assertEqual(Original, Raw)
+        after 1000 -> error(raw_waiter_timeout)
+        end,
+        lists:foreach(fun({Pid, Ref}) ->
+            receive {'DOWN', Ref, process, Pid, normal} -> ok
+            after 1000 -> error(process_timeout)
+            end
+        end, [{Writer, WriterRef}, {Waiter, WaiterRef}, {RawWaiter, RawRef}]),
+        ?assertEqual({monitors, []}, process_info(C, monitors)),
+        ?assertEqual(recovered, depcache:memo(fun() -> recovered end, Key, C))
+    end).
+
+capture_exception(Fun) ->
+    try Fun()
+    catch
+        ?WITH_STACKTRACE(Class, Reason, Stack)
+            {exception, Class, Reason, Stack}
+    end.
+
+raise_memo_exception(error) -> error(memo_failure);
+raise_memo_exception(exit) -> exit(memo_failure);
+raise_memo_exception(throw) -> throw(memo_failure).
