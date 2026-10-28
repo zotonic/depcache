@@ -173,7 +173,7 @@ memo_premature_kill_test() ->
 
 cache_full_eviction_test() ->
     {ok, C} = depcache:start_link(#{memory_max => 1}),
-    {ok, {_Meta, _Deps, Data}} = gen_server:call(C, get_tables),
+    {ok, {_Meta, _Deps, Data, _Lru}} = gen_server:call(C, get_tables),
     MemoryMax = 1024 * 1024 div erlang:system_info(wordsize),
     Count = fill_until_full(C, Data, MemoryMax, 0),
 
@@ -212,7 +212,8 @@ lru_config_test() ->
 
 lru_disabled_by_default_test() ->
     {ok, C} = depcache:start_link(#{}),
-    {ok, {Meta, _Deps, _Data}} = gen_server:call(C, get_tables),
+    {ok, {Meta, _Deps, _Data, Lru}} = gen_server:call(C, get_tables),
+    ?assertEqual(undefined, Lru),
     ok = depcache:set(a, 1, C),
     [Row] = ets:lookup(Meta, a),
     ?assertEqual(undefined, ?META_LRU(Row)),
@@ -221,19 +222,25 @@ lru_disabled_by_default_test() ->
 
 lru_touch_on_read_test() ->
     {ok, C} = depcache:start_link(#{lru => true, lru_slots => 1024}),
-    {ok, {Meta, _Deps, _Data}} = gen_server:call(C, get_tables),
+    {ok, {Meta, _Deps, _Data, Ref}} = gen_server:call(C, get_tables),
     ok = depcache:set(a, 1, C),
     [Row] = ets:lookup(Meta, a),
-    {Ref, Slot} = ?META_LRU(Row),
+    Slot = ?META_LRU(Row),
     ?assert(is_integer(Slot) andalso Slot >= 1 andalso Slot =< 1024),
-    % The set stamps the slot with the server's clock
+    % A set is not an access: the slot stays untouched (0 in a fresh array)
+    ?assertEqual(0, atomics:get(Ref, Slot)),
+    % A read stamps the slot with the reader's clock
+    ?assertEqual({ok, 1}, depcache:get(a, C)),
     T0 = atomics:get(Ref, Slot),
-    ?assert(abs(T0 - now_sec()) =< 2),
+    ?assert(abs(T0 - now_sec()) =< 1),
     % A read a second later moves the stamp forward
     timer:sleep(1100),
     ?assertEqual({ok, 1}, depcache:get(a, C)),
     T1 = atomics:get(Ref, Slot),
     ?assert(T1 > T0),
+    % Setting the key again does not reset the stamp
+    ok = depcache:set(a, 2, C),
+    ?assertEqual(T1, atomics:get(Ref, Slot)),
     % A miss or a flush does not touch anything
     ok = depcache:flush(a, C),
     ?assertEqual(undefined, depcache:get(a, C)),
@@ -245,7 +252,7 @@ lru_eviction_keeps_hot_keys_test_() ->
 
 lru_eviction_keeps_hot_keys() ->
     {ok, C} = depcache:start_link(#{memory_max => 1, lru => true}),
-    {ok, {_Meta, _Deps, Data}} = gen_server:call(C, get_tables),
+    {ok, {_Meta, _Deps, Data, _Lru}} = gen_server:call(C, get_tables),
     MemoryMax = 1024 * 1024 div erlang:system_info(wordsize),
 
     % Fill most of the cache with cold entries, then add a few hot ones
@@ -258,9 +265,10 @@ lru_eviction_keeps_hot_keys() ->
     timer:sleep(1100),
     [ ?assertMatch({ok, _}, depcache:get(K, C)) || K <- HotKeys ],
 
-    % Push the cache well over its limit, so that about a third of it has to be
-    % evicted. The cleanup process checks the size once a second, so this fill
-    % mostly completes before it starts evicting.
+    % Push the cache well over its limit with keys that are set but never read,
+    % like a scan over many one-off pages, so that about a third of the cache
+    % has to be evicted. The cleanup process checks the size once a second, so
+    % this fill mostly completes before it starts evicting.
     Total = fill_until(C, Data, MemoryMax * 3 div 2, ColdCount) + length(HotKeys),
     timer:sleep(2500),
     _ = sys:get_state(C),

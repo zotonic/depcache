@@ -35,11 +35,15 @@ The config is a map or proplist with these keys:
 - `callback`: an `{Module, Function, Args}` called on cache events, such as
   an eviction.
 - `lru`: default `false`. When `true`, a full cache evicts the least recently
-  used entries instead of random ones. Every successful lookup does one
-  lock-free atomic store of the current time into a slot chosen by hashing
-  the key, and the cleanup process evicts the oldest tenth of every batch it
-  sweeps while the cache is full. Only useful if the cache actually reaches
-  `memory_max`.
+  used entries instead of random ones. Every cache hit stores the current
+  time (seconds) into an atomics slot chosen by hashing the key, which costs
+  about 50ns: one lock-free atomic read, plus a store when the second has
+  changed. Setting a key is not an access, so entries that are never read
+  again are evicted first and a scan over many one-off keys cannot push out
+  entries that are in use. While the cache is full the cleanup process
+  evicts the oldest tenth of every batch of entries it sweeps (sampled LRU,
+  as Redis does it), so the array is never scanned. Only useful if the cache
+  actually reaches `memory_max`.
 - `lru_slots`: number of slots in the LRU access-time array, default 262144
   (2MB, 8 bytes per slot). Keys that hash to the same slot share an access
   time. Use at least four slots per cached entry.
