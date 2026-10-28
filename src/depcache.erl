@@ -1,5 +1,5 @@
 %% @author Arjan Scherpenisse
-%% @copyright 2009-2025 Marc Worrell, Arjan Scherpenisse
+%% @copyright 2009-2026 Marc Worrell, Arjan Scherpenisse
 %% @doc Depcache API
 %%
 %% == depcache API ==
@@ -14,7 +14,7 @@
 %% {@link cleanup/1}, {@link cleanup/5}
 %%
 %% @end
-%% Copyright 2009-2025 Marc Worrell, Arjan Scherpenisse
+%% Copyright 2009-2026 Marc Worrell, Arjan Scherpenisse
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -76,12 +76,13 @@
 -record(tables, {
     meta_table :: ets:tab(),
     deps_table :: ets:tab(),
-    data_table :: ets:tab()
+    data_table :: ets:tab(),
+    memory_table :: ets:tab()
 }).
 
--record(state,  {now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map(), writers :: map() }).
--record(meta,   {key :: key(), expire :: sec(), serial :: non_neg_integer(), depend :: dependencies()}).
--record(depend, {key :: key(), serial :: non_neg_integer()}).
+-record(state,  {now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map(), writers :: map(), cleanup_pid :: pid(), memory_max :: non_neg_integer(), pressured = false :: boolean() }).
+-record(meta,   {key :: key(), expire :: sec(), serial :: non_neg_integer(), depend :: dependencies(), binary_bytes = 0 :: non_neg_integer(), memory_words = 0 :: non_neg_integer()}).
+-record(depend, {key :: key(), serial :: non_neg_integer(), refs = 0 :: non_neg_integer()}).
 
 -record(cleanup_state, {
     pid :: pid(),
@@ -91,11 +92,10 @@
     callback :: callback() | undefined
 }).
 
--type tables() :: #tables{meta_table :: ets:tab(), deps_table :: ets:tab(), data_table :: ets:tab()}.
+-type tables() :: #tables{meta_table :: ets:tab(), deps_table :: ets:tab(), data_table :: ets:tab(), memory_table :: ets:tab()}.
 -type state() :: #state{now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map(), writers :: map()}.
 -type depend() :: #depend{key :: key(), serial :: non_neg_integer()}.
 -type cleanup_state() :: #cleanup_state{pid :: pid(), tables :: tables(), name :: atom(), memory_max :: non_neg_integer(), callback :: callback() | undefined}.
--type meta() :: #meta{key :: key(), expire :: sec(), serial :: non_neg_integer(), depend :: dependencies()}.
 -type config() :: config_map() | config_proplist().
 -type config_map() :: #{memory_max => non_neg_integer() | undefined,
                         callback => callback() | undefined}.
@@ -306,7 +306,7 @@ memo(Fun, Key, MaxAge, Dep, Server) ->
         {throw, R} ->
             throw(R);
         undefined ->
-            memo_key(Fun, Key, MaxAge, Dep, Server);
+            memo_key(Fun, Key1, MaxAge, Dep, Server);
         {error, premature_exit} ->
             ?MODULE:memo(Fun, Key, MaxAge, Dep, Server)
     end.
@@ -336,7 +336,7 @@ memo_key(Fun, Key, MaxAge, Dep, Server) ->
                                       Value ->
                                           {Value, MaxAge, Dep}
                                   end,
-        case MaxAge of
+        case MaxAge1 of
             0 -> memo_send_replies(Key, Value1, Server);
             _ -> set(Key, Value1, MaxAge1, Dep1, Server)
         end,
@@ -450,8 +450,10 @@ set(Key, Data, MaxAge, Server) ->
     Server :: depcache_server(),
     Result :: ok.
 set(Key, Data, MaxAge, Depend, Server) ->
-	flush_process_dict(),
-    gen_server:call(Server, {set, Key, Data, MaxAge, Depend}).
+    flush_process_dict(),
+    %% Traverse payloads in the caller, not in the shared writer process.
+    {Bytes, Words} = entry_size(Key, Data, Depend),
+    gen_server:call(Server, {set, Key, Data, MaxAge, Depend, Bytes, Words}).
 
 
 %% @doc Fetch the key from the cache, when the key does not exist then lock the entry and let 
@@ -525,12 +527,12 @@ get(Key, Server) ->
 get_subkey(Key, SubKey, Server) ->
     case in_process_server(Server) of
         true ->
-            case erlang:get({depcache, {subkey, Key, SubKey}}) of
+            case erlang:get({depcache_subkey, Key, SubKey}) of
                 {memo, Value} ->
                     Value;
                 undefined ->
                     Value = gen_server:call(Server, {get, Key, SubKey}),
-                    erlang:put({depcache, {subkey, Key, SubKey}}, {memo, Value}),
+                    memo_put({depcache_subkey, Key, SubKey}, Value),
                     Value
             end;
         false ->
@@ -589,14 +591,14 @@ flush(Server) ->
     flush_process_dict().
 
 
-%% @doc Return the total memory size of all stored terms
+%% @doc Return estimated cache memory in words, including ETS overhead and
+%% retained binary payloads. Shared binaries are counted conservatively.
 
 -spec size( Server ) -> Result when
     Server :: depcache_server(),
-    Result :: non_neg_integer() | undefined.
+    Result :: non_neg_integer().
 size(Server) ->
-    {_Meta, _Deps, Data} = get_tables(Server),
-    ets:info(Data, memory).
+    gen_server:call(Server, size).
 
 
 %% @private
@@ -650,22 +652,12 @@ get_process_dict(Key, Server) ->
                 {memo, Value} ->
                     Value;
                 undefined ->
-                    % Prevent the process dict memo from blowing up the process size
-                    case now_sec() > erlang:get(depcache_now)
-                          orelse erlang:get(depcache_count) > ?PROCESS_DICT_THRESHOLD of
-                        true -> flush_process_dict();
-                        false -> nop
-                    end,
-
                     Value = get_ets(Key, Server),
-                    erlang:put({depcache, Key}, {memo, Value}),
-                    erlang:put(depcache_count, incr(erlang:get(depcache_count))),
+                    memo_put({depcache, Key}, Value),
                     Value
             end;
-        false when is_atom(Server) ->
-            get_ets(Key, Server);
         false ->
-            depcache_disabled
+            get_ets(Key, Server)
     end.
 
 %% @private
@@ -677,14 +669,22 @@ get_process_dict(Key, Server) ->
     Result :: undefined | {ok, any()}.
 get_ets(Key, Server) ->
     {MetaTable, DepsTable, DataTable} = get_tables(Server),
-    case get_concurrent(Key, get_now(), MetaTable, DepsTable, DataTable) of
-        flush ->
-            flush(Key, Server),
-            undefined;
-        undefined ->
-            undefined;
-        {ok, _Value} = Found ->
-            Found
+    try get_concurrent(Key, get_now(), MetaTable, DepsTable, DataTable) of
+        {flush, Serial} ->
+            flush_process_dict(),
+            gen_server:call(Server, {get_checked, Key, Serial});
+        retry ->
+            %% A replacement crossed the two table reads. Resolve in the writer
+            %% instead of reporting a miss or spinning while writes continue.
+            gen_server:call(Server, {get, Key});
+        Value -> Value
+    catch
+        error:badarg ->
+            %% A cached table identifier outlived its server. Preserve the normal
+            %% gen_server failure semantics and allow named servers to restart.
+            erlang:erase(depcache_tables),
+            flush_process_dict(),
+            gen_server:call(Server, {get, Key})
     end.
 
 
@@ -697,6 +697,13 @@ in_process_server(Server) ->
     case erlang:get(depcache_in_process) of
         true ->
             _ = get_tables(Server),
+            Now = now_sec(),
+            case erlang:get(depcache_now) =/= Now
+                 orelse erlang:get(depcache_count) > ?PROCESS_DICT_THRESHOLD of
+                true -> flush_process_dict();
+                false -> ok
+            end,
+            erlang:put(depcache_now, Now),
             true;
         _ ->
             false
@@ -711,7 +718,7 @@ in_process_server(Server) ->
 in_process(true) ->
     erlang:put(depcache_in_process, true);
 in_process(false) ->
-    Old = erlang:erase(depache_in_process),
+    Old = erlang:erase(depcache_in_process),
     flush_process_dict(),
     Old;
 in_process(undefined) ->
@@ -720,29 +727,31 @@ in_process(undefined) ->
 
 %% @doc Flush all items memoized in the process dictionary.
 
--spec flush_process_dict() -> Result when
-    Result :: ok.
+-spec flush_process_dict() -> ok.
 flush_process_dict() ->
-    [ erlang:erase({depcache, Key}) || {{depcache, Key},_Value} <- erlang:get() ],
-    erlang:erase(depache_now),
+    case erlang:erase(depcache_keys) of
+        undefined -> ok;
+        Keys -> lists:foreach(fun erlang:erase/1, Keys)
+    end,
+    erlang:erase(depcache_now),
     erlang:put(depcache_count, 0),
+    ok.
+
+%% Track only our own entries; never scan the application's process dictionary.
+-spec memo_put(term(), term()) -> ok.
+memo_put(Key, Value) ->
+    Keys = case erlang:get(depcache_keys) of undefined -> []; Ks -> Ks end,
+    erlang:put(Key, {memo, Value}),
+    erlang:put(depcache_keys, [Key|Keys]),
+    erlang:put(depcache_count, incr(erlang:get(depcache_count))),
     ok.
 
 %% @private
 %% @doc Get the current system time in seconds
 
--spec get_now() -> Result when
-	Result :: sec().
+-spec get_now() -> sec().
 get_now() ->
-    case erlang:get(depcache_now) of
-        undefined ->
-            Now = now_sec(),
-            erlang:put(depache_now, Now),
-            Now;
-        Now ->
-            Now
-    end.
-
+    now_sec().
 
 
 
@@ -762,7 +771,7 @@ init(Config) ->
                    end,
     MemoryMaxWords = 1024 * 1024 * MemoryMaxMbs div erlang:system_info(wordsize),
 
-    Tables = case maps:get(name, Config, none) of
+    Tables0 = case maps:get(name, Config, none) of
         none ->
             #tables{
                 meta_table=ets:new(meta_table, [set, {keypos, 2}, protected, {read_concurrency, true}]),
@@ -779,15 +788,11 @@ init(Config) ->
                                    [set, named_table, {keypos, 1}, protected, {read_concurrency, true}])
             }
     end,
-    State = #state{
-        tables = Tables,
-        now=now_sec(),
-        serial=0,
-        wait_pids=#{},
-        writers=#{}
-    },
+    MemoryTable = ets:new(memory_table, [set, protected]),
+    ets:insert(MemoryTable, {binary_bytes, 0}),
+    Tables = Tables0#tables{memory_table = MemoryTable},
     timer:send_after(1000, tick),
-    spawn_link(?MODULE,
+    CleanupPid = spawn_link(?MODULE,
                cleanup,
                [#cleanup_state{
                    pid = self(),
@@ -796,12 +801,25 @@ init(Config) ->
                    memory_max = MemoryMaxWords,
                    callback = maps:get(callback, Config, undefined)
                }]),
-    {ok, State}.
+    {ok, #state{
+        tables=Tables,
+        now=now_sec(),
+        serial=0,
+        wait_pids=#{},
+        writers=#{},
+        cleanup_pid=CleanupPid,
+        memory_max=MemoryMaxWords
+    }}.
 
 %% @private
 %% @doc Handling call messages
 
 -spec handle_call(Request, From, State) -> Result when 
+    Request :: size,
+    From :: {pid(), gen_server:reply_tag()},
+    State :: state(),
+    Result :: {reply, non_neg_integer(), State};
+(Request, From, State) -> Result when
     Request :: get_tables,
     From :: {pid(), gen_server:reply_tag()},
     State :: state(),
@@ -823,7 +841,7 @@ init(Config) ->
     Result :: {reply, [{pid(), Tag}], state()},
     Tag :: gen_server:reply_tag();
 (Request, From, State) -> Result when
-    Request :: {get, Key},
+    Request :: {get, Key} | {get_checked, Key, non_neg_integer()},
     Key :: key(),
     From :: {pid(), gen_server:reply_tag()},
     State :: state(),
@@ -838,7 +856,7 @@ init(Config) ->
     Result :: {reply, Reply, State},
     Reply :: undefined | {ok, term()};
 (Request, From, State) -> Result when
-    Request :: {set, Key, Data, MaxAge, Depend},
+    Request :: {set, Key, Data, MaxAge, Depend} | {set, Key, Data, MaxAge, Depend, non_neg_integer(), non_neg_integer()},
     Key :: key(),
     Data :: any(),
     MaxAge :: max_age_secs(),
@@ -848,7 +866,7 @@ init(Config) ->
     Result :: {reply, Reply, State},
     Reply :: ok;
 (Request, From, State) -> Result when
-    Request :: {flush, Key},
+    Request :: {flush, Key} | {flush, Key, non_neg_integer()} | {flush_batch, [{key(), non_neg_integer()}]},
     Key :: key(),
     From :: {pid(), gen_server:reply_tag()},
     State :: state(),
@@ -858,6 +876,9 @@ init(Config) ->
 	From :: {pid(), gen_server:reply_tag()},
 	State :: state(),
 	Result :: {reply, ok, State}.
+handle_call(size, _From, #state{tables=Tables}=State) ->
+    {reply, memory_words(Tables), State};
+
 handle_call(get_tables, _From, State) ->
 	handle_call_get_tables(State);
 
@@ -873,8 +894,24 @@ handle_call({get, Key}, _From, State) ->
 handle_call({get, Key, SubKey}, _From, State) ->
     handle_call_get_sub_key({Key, SubKey}, State);
 
-handle_call({set, Key, Data, MaxAge, Depend}, _From, State) ->
-	handle_call_set({Key, Data, MaxAge, Depend}, State);
+handle_call({set, Key, Data, MaxAge, Depend}, From, State) ->
+    {Bytes, Words} = entry_size(Key, Data, Depend),
+    handle_call({set, Key, Data, MaxAge, Depend, Bytes, Words}, From, State);
+
+handle_call({set, Key, Data, MaxAge, Depend, Bytes, Words}, _From, State) ->
+    handle_call_set({Key, Data, MaxAge, Depend, Bytes, Words}, State);
+
+handle_call({get_checked, Key, Serial}, _From, State) ->
+    flush_if_current(Key, Serial, State),
+    handle_call_get(Key, State);
+
+handle_call({flush_batch, Entries}, _From, State) ->
+    lists:foreach(fun({Key, Serial}) -> flush_if_current(Key, Serial, State) end, Entries),
+    {reply, ok, State};
+
+handle_call({flush, Key, Serial}, _From, State) ->
+    flush_if_current(Key, Serial, State),
+    {reply, ok, State};
 
 handle_call({flush, Key}, _From, State) ->
 	handle_call_flush(Key, State);
@@ -891,6 +928,10 @@ handle_call(flush, _From, State) ->
     State :: state(),
     Result :: {noreply, State}.
 	
+handle_cast({flush, Key, Serial}, State) ->
+    flush_if_current(Key, Serial, State),
+    {noreply, State};
+
 handle_cast({flush, Key}, State) ->
     flush_key(Key, State),
     {noreply, State};
@@ -899,6 +940,7 @@ handle_cast(flush, #state{tables = Tables} = State) ->
     ets:delete_all_objects(Tables#tables.data_table),
     ets:delete_all_objects(Tables#tables.meta_table),
     ets:delete_all_objects(Tables#tables.deps_table),
+    ets:insert(Tables#tables.memory_table, {binary_bytes, 0}),
     erase_process_dict(),
     {noreply, State};
 
@@ -925,11 +967,10 @@ handle_info({'DOWN', Ref, process, _Pid, _Reason}, #state{ writers = Writers }=S
             {noreply, State};
         {Key, Writers1} ->
             WaitPids1 = case maps:take(Key, State#state.wait_pids) of
-                           error ->
-                               State#state.wait_pids;
-                           {{_MaxAge, List, _WriterRef}, WaitPids} ->
+                           {{_MaxAge, List, Ref}, WaitPids} ->
                                _ = [ catch gen_server:reply(From, {error, premature_exit}) || From <- List ],
-                               WaitPids
+                               WaitPids;
+                           _ -> State#state.wait_pids
                        end,
             {noreply, State#state{ writers = Writers1, wait_pids = WaitPids1 }}
     end;
@@ -945,7 +986,11 @@ handle_info(_Msg, State) ->
     State :: state(),
     Result :: ok.
 
-terminate(_Reason, _State) -> ok.
+terminate(_Reason, #state{cleanup_pid=Pid}) ->
+    %% A normal server exit does not terminate linked processes automatically.
+    unlink(Pid),
+    exit(Pid, shutdown),
+    ok.
 
 
 %% @doc This function is called by a gen_server process when it is to update 
@@ -990,9 +1035,9 @@ handle_call_get_tables(#state{tables = Tables} = State) ->
 	Reply :: undefined | {ok, term()}.
 handle_call_get_wait(Key, From, #state{tables = Tables} = State) ->
     case get_concurrent(Key, State#state.now, Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table) of
-        NotFound when NotFound =:= flush; NotFound =:= undefined ->
+        NotFound when is_tuple(NotFound), element(1, NotFound) =:= flush; NotFound =:= undefined ->
             case NotFound of
-                flush -> flush_key(Key, State);
+                {flush, Serial} -> flush_if_current(Key, Serial, State);
                 undefined -> State
             end,
             case State#state.wait_pids of
@@ -1006,7 +1051,7 @@ handle_call_get_wait(Key, From, #state{tables = Tables} = State) ->
                                   error ->
                                       State#state.writers;
                                   {ok, {_, _WaitPids, OldWriter}} ->
-                                      erlang:demonitor(OldWriter),
+                                      erlang:demonitor(OldWriter, [flush]),
                                       maps:without([OldWriter], State#state.writers)
                               end,
 
@@ -1037,8 +1082,10 @@ handle_call_get_wait(Key, From, #state{tables = Tables} = State) ->
 	Tag :: atom().
 handle_call_get_waiting_pids(Key, State) ->
     {State1, Pids} = case maps:take(Key, State#state.wait_pids) of
-                         {{_MaxAge, List, _WriterRef}, WaitPids} ->
-                             {State#state{wait_pids=WaitPids}, List};
+                         {{_MaxAge, List, WriterRef}, WaitPids} ->
+                             erlang:demonitor(WriterRef, [flush]),
+                             Writers = maps:remove(WriterRef, State#state.writers),
+                             {State#state{wait_pids=WaitPids, writers=Writers}, List};
                          error ->
                              {State, []}
                      end,
@@ -1085,44 +1132,46 @@ handle_call_get_sub_key({Key, SubKey}, State) ->
 %% @see handle_call/3
 %% 
 
--spec handle_call_set(Request, State) -> Result when
-	Request :: {Key, Data, MaxAge, Depend},
-	Key :: key(),
-	Data :: any(),
-	MaxAge :: max_age_secs(),
-	Depend :: dependencies(),
-	State :: state(),
-	Result :: {reply, Reply, State},
-	Reply :: ok.
-handle_call_set({Key, Data, MaxAge, Depend}, #state{tables = Tables} = State) ->
+-spec handle_call_set({key(), term(), max_age_secs(), dependencies(),
+    non_neg_integer(), non_neg_integer()}, state()) -> {reply, ok, state()}.
+handle_call_set({Key, Data, MaxAge, Depend, Bytes, Words}, #state{tables=Tables}=State) ->
     erase_process_dict(),
-    State1 = State#state{serial=State#state.serial+1},
-    case MaxAge of
-        0 ->
-            ets:delete(Tables#tables.meta_table, Key),
-            ets:delete(Tables#tables.data_table, Key);
-        _ ->
-            ets:insert(Tables#tables.data_table, {Key, Data}),
-			ets:insert(Tables#tables.meta_table, #meta{key=Key, expire=State1#state.now+MaxAge, serial=State1#state.serial, depend=Depend})
+    Serial = State#state.serial + 1,
+    Old = case ets:lookup(Tables#tables.meta_table, Key) of
+        [Meta] -> Meta;
+        [] -> #meta{expire=0, serial=0, depend=[]}
     end,
-    
-    %% Make sure all dependency keys are available in the deps table
-    AddDepend = fun(D) ->
-                    ets:insert_new(Tables#tables.deps_table, #depend{key=D, serial=State1#state.serial})
-                end,
-    lists:foreach(AddDepend, Depend),
-    
-    %% Flush the key itself in the dependency table - this will invalidate depending items
-    case is_simple_key(Key) of
-        true  -> ok;
-        false -> ets:insert(Tables#tables.deps_table, #depend{key=Key, serial=State#state.serial})
+    Memory = memory_words(Tables),
+    %% Admission bounds growth even when writers outpace the eviction worker.
+    %% Rejected writes still invalidate old results and satisfy memo waiters.
+    Admit = MaxAge > 0 andalso
+        Memory + admission_words(Words, Depend, Old) < State#state.memory_max,
+    case Admit of
+        true ->
+            {Added, Removed} = dependency_changes(Depend, Old#meta.depend),
+            add_dependencies(Added, Serial, Tables),
+            update_binary_bytes(Bytes - Old#meta.binary_bytes, Tables),
+            %% Keep the old entry visible until its replacement is published.
+            ets:insert(Tables#tables.data_table, {Key, Serial, Data}),
+            ets:insert(Tables#tables.meta_table, #meta{key=Key,
+                expire=now_sec()+MaxAge, serial=Serial, depend=Depend,
+                binary_bytes=Bytes, memory_words=Words}),
+            release_dependencies(Removed, Tables);
+        false -> remove_entry(Key, Tables)
     end,
+    invalidate_dependency(Key, Serial, Tables),
+    Pressure = Memory + Words >= State#state.memory_max * 9 div 10,
+    case Pressure andalso not State#state.pressured of
+        true -> State#state.cleanup_pid ! pressure;
+        false -> ok
+    end,
+    State1 = State#state{serial=Serial, pressured=Pressure},
 
     %% Check if other processes are waiting for this key, send them the data
     case maps:take(Key, State1#state.wait_pids) of
         {{_MaxAge, List, WriterRef}, WaitPids} ->
             _ = [ catch gen_server:reply(From, {ok, Data}) || From <- List ],
-            _ = erlang:demonitor(WriterRef),
+            _ = erlang:demonitor(WriterRef, [flush]),
             Writers = maps:without([WriterRef], State#state.writers),
             {reply, ok, State1#state{writers=Writers, wait_pids=WaitPids}};
         error ->
@@ -1156,6 +1205,7 @@ handle_call_flush_all(#state{tables = Tables} = State) ->
     ets:delete_all_objects(Tables#tables.data_table),
     ets:delete_all_objects(Tables#tables.meta_table),
     ets:delete_all_objects(Tables#tables.deps_table),
+    ets:insert(Tables#tables.memory_table, {binary_bytes, 0}),
     erase_process_dict(),
     {reply, ok, State}.
 
@@ -1207,8 +1257,8 @@ incr(N) -> N+1.
 	Value :: term().
 get_in_depcache_ets(Key, #state{tables = Tables} = State) ->
     case get_concurrent(Key, State#state.now, Tables#tables.meta_table, Tables#tables.deps_table, Tables#tables.data_table) of
-        flush ->
-            flush_key(Key, State),
+        {flush, Serial} ->
+            flush_if_current(Key, Serial, State),
             undefined;
         undefined ->
             undefined;
@@ -1226,7 +1276,7 @@ get_in_depcache_ets(Key, #state{tables = Tables} = State) ->
 	MetaTable :: ets:tab(), 
 	DepsTable :: ets:tab(), 
 	DataTable :: ets:tab(),
-	Result :: flush | undefined | {ok, term()}.
+	Result :: retry | {flush, non_neg_integer()} | undefined | {ok, term()}.
 get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) ->
     case ets:lookup(MetaTable, Key) of
         [] -> 
@@ -1245,12 +1295,12 @@ get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) ->
 	Serial :: non_neg_integer(), 
 	Expire :: sec(), 
 	Depend :: dependencies(),
-	Result :: flush | undefined | {ok, term()}.
+	Result :: retry | {flush, non_neg_integer()} | undefined | {ok, term()}.
 get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend) ->	
 	%% Check expiration
 	case Expire >= Now of
 		false -> 
-			flush;
+			{flush, Serial};
 		true ->
 			get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend)
 	end.
@@ -1263,46 +1313,115 @@ get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend) ->
 	DataTable :: ets:tab(),
 	Serial :: non_neg_integer(), 
 	Depend :: dependencies(),
-	Result :: flush | undefined | {ok, term()}.
+	Result :: retry | {flush, non_neg_integer()} | undefined | {ok, term()}.
 get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend) ->	
 	%% Check dependencies
 	case check_depend(Serial, Depend, DepsTable) of
 		false ->
-			flush;
+			{flush, Serial};
 		true ->
 			case ets:lookup(DataTable, Key) of
 				[] -> undefined;
-				[{_Key,Data}] -> {ok, Data}
+				[{_Key,Serial,Data}] -> {ok, Data};
+                [_Replacement] -> retry
 			end
 	end.
 
 
 %% @private
-%% @doc Check if a key is usable as dependency key.  That is a string, atom, integer etc, but not a list of lists.
-
--spec is_simple_key(List) -> Result when
-	List :: list(),
-	Result :: true | false.
-is_simple_key([]) ->
-    true;
-is_simple_key([H|_]) ->
-    not is_list(H);
-is_simple_key(_Key) ->
-    true.
-
+%% Delete only the generation observed by a concurrent reader or cleanup worker.
+-spec flush_if_current(key(), non_neg_integer(), state()) -> ok.
+flush_if_current(Key, Serial, #state{tables=Tables}=State) ->
+    case ets:lookup(Tables#tables.meta_table, Key) of
+        [#meta{serial=Serial}] -> flush_key(Key, State);
+        _ -> ok
+    end.
 
 %% @private
-%% @doc Flush a key from the cache, reset the in-process cache as well (we don't know if any cached value had a dependency).
-
--spec flush_key(Key, State) -> Result when
-	Key :: key(), 
-	State :: state(),
-	Result :: ok.
-flush_key(Key, #state{tables = Tables}) ->
-    ets:delete(Tables#tables.data_table, Key),
-    ets:delete(Tables#tables.deps_table, Key),
-    ets:delete(Tables#tables.meta_table, Key),
+-spec flush_key(key(), state()) -> ok.
+flush_key(Key, #state{tables=Tables, serial=Serial}) ->
+    remove_entry(Key, Tables),
+    invalidate_dependency(Key, Serial+1, Tables),
     erase_process_dict().
+
+%% Keep invalidation generations while dependents still refer to them. Removing
+%% the last reference is safe: a future dependent gets a new generation.
+-spec invalidate_dependency(key(), non_neg_integer(), tables()) -> ok.
+invalidate_dependency(Key, Serial, Tables) ->
+    ets:update_element(Tables#tables.deps_table, Key, {#depend.serial, Serial}),
+    ok.
+
+-spec remove_entry(key(), tables()) -> ok.
+remove_entry(Key, Tables) ->
+    case ets:lookup(Tables#tables.meta_table, Key) of
+        [#meta{depend=Depend, binary_bytes=Bytes}] ->
+            ets:delete(Tables#tables.meta_table, Key),
+            ets:delete(Tables#tables.data_table, Key),
+            update_binary_bytes(-Bytes, Tables),
+            release_dependencies(Depend, Tables);
+        [] -> ok
+    end.
+
+%% Only credit non-growing replacements with identical dependencies. Otherwise
+%% reserve the full incoming footprint; shared old dependencies may stay alive.
+-spec admission_words(non_neg_integer(), dependencies(), #meta{}) -> non_neg_integer().
+admission_words(Words, Deps, #meta{depend=Deps, memory_words=OldWords}) when Words =< OldWords -> 0;
+admission_words(Words, _Deps, _Old) -> Words.
+
+-spec dependency_changes(dependencies(), dependencies()) -> {dependencies(), dependencies()}.
+dependency_changes(Deps, Deps) -> {[], []};
+dependency_changes(New, Old) -> {New -- Old, Old -- New}.
+
+-spec add_dependencies(dependencies(), non_neg_integer(), tables()) -> ok.
+add_dependencies(Deps, Serial, Tables) ->
+    lists:foreach(fun(D) ->
+        ets:update_counter(Tables#tables.deps_table, D, {#depend.refs, 1},
+            #depend{key=D, serial=Serial})
+    end, Deps).
+
+-spec release_dependencies(dependencies(), tables()) -> ok.
+release_dependencies(Deps, Tables) ->
+    lists:foreach(fun(D) ->
+        case ets:update_counter(Tables#tables.deps_table, D, {#depend.refs, -1}) of
+            0 -> ets:delete(Tables#tables.deps_table, D);
+            _ -> ok
+        end
+    end, Deps).
+
+-spec update_binary_bytes(integer(), tables()) -> ok.
+update_binary_bytes(0, _Tables) -> ok;
+update_binary_bytes(Delta, Tables) ->
+    ets:update_counter(Tables#tables.memory_table, binary_bytes, Delta),
+    ok.
+
+%% Conservative incremental footprint: copied ETS terms, binary backing storage,
+%% and per-object/hash overhead, including potentially new dependency records.
+-spec entry_size(key(), term(), dependencies()) -> {non_neg_integer(), non_neg_integer()}.
+entry_size(Key, Data, Depend) ->
+    Bytes = binary_bytes({Key, Data, Depend}),
+    WordSize = erlang:system_info(wordsize),
+    Words = erts_debug:flat_size({Key, 0, Data})
+        + erts_debug:flat_size(#meta{key=Key, expire=0, serial=0, depend=Depend}) + 32
+        + lists:sum([erts_debug:flat_size(#depend{key=D, serial=0}) + 16 || D <- Depend])
+        + (Bytes + WordSize - 1) div WordSize,
+    {Bytes, Words}.
+
+%% ETS memory excludes off-heap binary payloads. Count retained backing storage;
+%% shared binaries may be counted more than once, deliberately conservatively.
+-spec binary_bytes(term()) -> non_neg_integer().
+binary_bytes(B) when is_bitstring(B) ->
+    case binary:referenced_byte_size(B) of
+        N when N > 64 -> N;
+        _ -> 0
+    end;
+binary_bytes([H|T]) -> binary_bytes(H) + binary_bytes(T);
+binary_bytes(T) when is_tuple(T) -> binary_bytes(tuple_to_list(T));
+binary_bytes(M) when is_map(M) ->
+    maps:fold(fun(K, V, N) -> N + binary_bytes(K) + binary_bytes(V) end, 0, M);
+binary_bytes(F) when is_function(F) ->
+    {env, Env} = erlang:fun_info(F, env),
+    binary_bytes(Env);
+binary_bytes(_) -> 0.
 
 
 %% @private
@@ -1393,162 +1512,79 @@ find_value(_Key, _Data) ->
 -spec cleanup(CleanUp_state) -> Result when
 	CleanUp_state :: cleanup_state(),
 	Result :: no_return().
-cleanup(#cleanup_state{} = State) ->
-    ?MODULE:cleanup(State, 0, now_sec(), normal, 0).
-
-%% @doc Cleanup process for the depcache.  Periodically checks a batch of depcache items for their validity.
-%%      Asks the depcache server to delete invalidated items.  When the load of the data table is too high then
-%%      This cleanup process starts to delete random entries.  By using a random delete we don't need to keep
-%%      a LRU list, which is a bit expensive.
-
--spec cleanup(State, SlotNr, Now, Mode, Ct) -> Result when
-	State :: cleanup_state(),
-	SlotNr :: '$end_of_table' | non_neg_integer(), 
-	Now :: sec(), 
-	Mode :: normal | cache_full, 
-	Ct :: integer(),
-	Result :: no_return().
-cleanup(#cleanup_state{tables = #tables{meta_table = MetaTable}} = State, '$end_of_table', Now, _Mode, Ct) ->
-    cleanup_wrap_around_table(State, MetaTable, Now, Ct);
-
-cleanup(#cleanup_state{tables = #tables{meta_table = MetaTable}} = State, SlotNr, Now, normal, 0) ->
-    cleanup_normal(State, MetaTable, SlotNr, Now);
-
-cleanup(#cleanup_state{} = State, SlotNr, Now, cache_full, 0) ->
-    cleanup_is_cache_full(State, SlotNr, Now);
-
-cleanup(#cleanup_state{tables = #tables{meta_table = MetaTable}} = State, SlotNr, Now, normal, Ct) ->
-    cleanup_check_expire_stamp(State, MetaTable, SlotNr, Now, Ct);
-
-cleanup(#cleanup_state{pid = Pid, name = Name, callback = Callback, tables = #tables{meta_table = MetaTable}} = State, SlotNr, Now, cache_full, Ct) ->
-    cleanup_random(State, MetaTable, SlotNr, Now, Ct, Pid, Name, Callback).
-
-
-%% @private
-%% @doc Wrap around the end of table.
-%% @see cleanup/5
-
--spec cleanup_wrap_around_table(State, MetaTable, Now, Ct) -> Result when
-	State :: cleanup_state(),
-	MetaTable :: ets:tab(),
-	Now :: sec(), 
-	Ct :: integer(),
-	Result :: no_return().
-cleanup_wrap_around_table(State, MetaTable, Now, Ct) ->
-    case ets:info(MetaTable, size) of
-        0 -> ?MODULE:cleanup(State, 0, Now, cleanup_mode(State), 0);
-        _ -> ?MODULE:cleanup(State, 0, Now, cleanup_mode(State), Ct)
+cleanup(#cleanup_state{pid=Pid}=State) ->
+    erlang:monitor(process, Pid),
+    try ?MODULE:cleanup(State, 0, now_sec(), normal, 0)
+    catch
+        ?WITH_STACKTRACE(Class, Reason, Stack)
+            case is_process_alive(Pid) of
+                true -> erlang:raise(Class, Reason, Stack);
+                false -> exit(normal)
+            end
     end.
 
+%% @doc Run bounded cleanup batches. Normal sweeps scale with the table size;
+%% pressure wakes the worker immediately and removes the delay between batches.
+-spec cleanup(cleanup_state(), '$end_of_table' | non_neg_integer(), sec(),
+    normal | cache_full, integer()) -> no_return().
+cleanup(#cleanup_state{pid=Pid, tables=Tables}=State, Slot, _Now, Mode, SweepLimit) ->
+    Delay = case Mode of normal -> 100; cache_full -> 0 end,
+    receive
+        pressure -> ok;
+        {'DOWN', _, process, Pid, _} -> exit(normal)
+    after Delay -> ok
+    end,
+    Mode1 = cleanup_mode(State),
+    %% Keep the sweep budget after removals: a sparse hash table can retain
+    %% many slots even when few entries remain.
+    NormalLimit = max(SweepLimit,
+        max(?CLEANUP_BATCH, min(10000, ets:info(Tables#tables.meta_table, size) div 10))),
+    Limit = case Mode1 of normal -> NormalLimit; cache_full -> ?CLEANUP_BATCH end,
+    Deadline = erlang:monotonic_time(microsecond) + 2000,
+    {Next, Expired, Evicted} = cleanup_scan(State, Slot, now_sec(), Mode1, Limit, Deadline, [], []),
+    lists:foreach(fun(_) -> callback(eviction, State#cleanup_state.name,
+        State#cleanup_state.callback) end, Evicted),
+    flush_batches(Pid, Expired ++ Evicted, [], 0),
+    ?MODULE:cleanup(State, Next, now_sec(), cleanup_mode(State), NormalLimit).
 
-%% @private
-%% @doc In `normal' cleanup, sleep a second between each batch before continuing our cleanup sweep.
-%% @see cleanup/5
-	
--spec cleanup_normal(State, MetaTable, SlotNr, Now) -> Result when
-	State :: cleanup_state(),
-	MetaTable :: ets:tab(),
-	SlotNr :: '$end_of_table' | non_neg_integer(), 
-	Now :: sec(), 
-	Result :: no_return().
-cleanup_normal(State, MetaTable, SlotNr, Now) ->
-    timer:sleep(1000),
-    case ets:info(MetaTable, size) of
-        0 -> ?MODULE:cleanup(State, SlotNr, Now, normal, 0);
-        _ -> ?MODULE:cleanup(State, SlotNr, now_sec(), cleanup_mode(State), ?CLEANUP_BATCH)
-    end.
+%% Bound writer work too, even if a normal sweep finds thousands of expired keys.
+flush_batches(Pid, Rest, Batch, ?CLEANUP_BATCH) ->
+    gen_server:call(Pid, {flush_batch, Batch}, infinity),
+    flush_batches(Pid, Rest, [], 0);
+flush_batches(_Pid, [], [], 0) -> ok;
+flush_batches(Pid, [], Batch, _Count) ->
+    gen_server:call(Pid, {flush_batch, Batch}, infinity);
+flush_batches(Pid, [Entry|Rest], Batch, Count) ->
+    flush_batches(Pid, Rest, [Entry|Batch], Count+1).
 
-
-%% @private
-%% @doc After finishing a batch in `cache_full' mode, check if the cache is still full, if so keep deleting entries.
-%% @see cleanup/5
-
--spec cleanup_is_cache_full(State, SlotNr, Now) -> Result when
-	State :: cleanup_state(),
-	SlotNr :: '$end_of_table' | non_neg_integer(), 
-	Now :: sec(), 
-	Result :: no_return().
-cleanup_is_cache_full(State, SlotNr, Now) ->
-    case cleanup_mode(State) of
-        normal     -> ?MODULE:cleanup(State, SlotNr, Now, normal, 0);
-        cache_full -> ?MODULE:cleanup(State, SlotNr, now_sec(), cache_full, ?CLEANUP_BATCH)
-    end.
-
-
-%% @private
-%% @doc Normal cleanup behaviour - check expire stamp and dependencies.
-%% @see cleanup/5
-
--spec cleanup_check_expire_stamp(State, MetaTable, SlotNr, Now, Ct) -> Result when
-	State :: cleanup_state(),
-	MetaTable :: ets:tab(),	
-	SlotNr :: '$end_of_table' | non_neg_integer(), 
-	Now :: sec(), 
-	Ct :: integer(),
-	Result :: no_return().
-cleanup_check_expire_stamp(State, MetaTable, SlotNr, Now, Ct) ->
-    Slot =  try
-                ets:slot(MetaTable, SlotNr)
-            catch
-                _M:_E -> '$end_of_table'
-            end,
-    case Slot of
-        '$end_of_table' -> ?MODULE:cleanup(State, '$end_of_table', Now, normal, 0);
-        [] -> ?MODULE:cleanup(State, SlotNr + 1, Now, normal, Ct - 1);
-        Entries ->
-            lists:foreach(fun(Meta) -> flush_expired(Meta, Now, State) end, Entries),
-            ?MODULE:cleanup(State, SlotNr + 1, Now, normal, Ct - 1)
-    end.
-
-
-%% @private
-%% @doc Full cache cleanup mode - randomly delete every 10th entry.
-%% @see cleanup/5
-
--spec cleanup_random(State, MetaTable, SlotNr, Now, Ct, Pid, Name, Callback) -> Result when
-	State :: cleanup_state(),
-	MetaTable :: ets:tab(),	
-	SlotNr :: '$end_of_table' | non_neg_integer(), 
-	Now :: sec(), 
-	Ct :: integer(),
-	Pid :: pid(),
-	Name :: atom(),
-	Callback :: undefined | callback(),
-	Result :: no_return().
-cleanup_random(State, MetaTable, SlotNr, Now, Ct, Pid, Name, Callback) ->
-    Slot =  try
-                ets:slot(MetaTable, SlotNr)
-            catch
-                _M:_E -> '$end_of_table'
-            end,
-    case Slot of
-        '$end_of_table' -> ?MODULE:cleanup(State, '$end_of_table', Now, cache_full, 0);
-        [] -> ?MODULE:cleanup(State, SlotNr + 1, Now, cache_full, Ct - 1);
-        Entries ->
-            FlushExpire = fun (Meta) ->
-                                case flush_expired(Meta, Now, State) of
-                                    ok -> {ok, Meta};
-                                    flushed -> flushed
-                                end
-                           end,
-            RandomDelete = fun
-                                ({ok, #meta{key=Key}}) ->
+cleanup_scan(_State, '$end_of_table', _Now, _Mode, _Left, _Deadline, Expired, Evicted) ->
+    {0, Expired, Evicted};
+cleanup_scan(_State, Slot, _Now, _Mode, 0, _Deadline, Expired, Evicted) ->
+    {Slot, Expired, Evicted};
+cleanup_scan(#cleanup_state{tables=Tables}=State, Slot, Now, Mode, Left, Deadline, Expired, Evicted) ->
+    case Left rem 32 =:= 0 andalso erlang:monotonic_time(microsecond) >= Deadline of
+        true -> {Slot, Expired, Evicted};
+        false ->
+            Entries = try ets:slot(Tables#tables.meta_table, Slot)
+                catch error:badarg -> '$end_of_table' end,
+            case Entries of
+                '$end_of_table' -> {0, Expired, Evicted};
+                _ ->
+                    {Expired1, Evicted1} = lists:foldl(fun
+                        (#meta{key=Key, serial=Serial, expire=Expire, depend=Deps}, {Es, Vs}) ->
+                            case Expire < Now orelse not check_depend(Serial, Deps, Tables#tables.deps_table) of
+                                true -> {[{Key, Serial}|Es], Vs};
+                                false when Mode =:= cache_full ->
                                     case rand_uniform(10) of
-                                        1 ->
-                                            callback(eviction, Name, Callback),
-                                            % Synchronous, so the next cache_full check sees the evicted
-                                            % entries gone and we don't keep evicting from a stale size.
-                                            gen_server:call(Pid, {flush, Key}, infinity);
-                                        _  -> ok
+                                        1 -> {Es, [{Key, Serial}|Vs]};
+                                        _ -> {Es, Vs}
                                     end;
-                                (flushed) -> flushed
-                           end,
-
-            Entries1 = lists:map(FlushExpire, Entries),
-            lists:foreach(RandomDelete, Entries1),
-            ?MODULE:cleanup(State, SlotNr + 1, Now, cache_full, Ct - 1)
+                                false -> {Es, Vs}
+                            end
+                    end, {Expired, Evicted}, Entries),
+                    cleanup_scan(State, Slot+1, Now, Mode, Left-1, Deadline, Expired1, Evicted1)
+            end
     end.
-	
 
 -ifdef(rand_only).
 rand_uniform(N) ->
@@ -1560,52 +1596,23 @@ rand_uniform(N) ->
 
 
 %% @private
-%% @doc Check if an entry is expired, if so delete it.
-
--spec flush_expired(Meta, Now, State) -> Result when
-	Meta :: meta(), 
-	Now :: sec(), 
-	State :: cleanup_state(), 
-	Result :: flushed | ok.
-flush_expired(
-    #meta{key=Key, serial=Serial, expire=Expire, depend=Depend},
-    Now,
-    #cleanup_state{pid = Pid, tables = #tables{deps_table = DepsTable}}
-) ->
-    Expired = Expire < Now orelse not check_depend(Serial, Depend, DepsTable),
-    case Expired of
-        true  -> gen_server:cast(Pid, {flush, Key}), flushed;
-        false -> ok
+%% Include all ETS tables and retained binary payloads. An empty cache cannot
+%% reclaim its table overhead, so it must sleep even with a zero memory budget.
+-spec cleanup_mode(cleanup_state()) -> cache_full | normal.
+cleanup_mode(#cleanup_state{tables=Tables, memory_max=MemoryMax}) ->
+    case ets:info(Tables#tables.meta_table, size) > 0
+         andalso memory_words(Tables) >= MemoryMax * 9 div 10 of
+        true -> cache_full;
+        false -> normal
     end.
 
-
-%% @private
-%% @doc When the data table is too large then we start to randomly delete keys.  It also signals the cleanup process
-%% that it needs to be more aggressive, upping its batch size.
-%% We use `erts_debug:size()' on the stored terms to calculate the total size of all terms stored.  This
-%% is better than counting the number of entries.  Using the `process_info(Pid,memory)' is not very useful as the
-%% garbage collection still needs to be done and then we delete too many entries.
-%% @equiv cleanup_mode(DataTable, MemoryMax)
-
--spec cleanup_mode(State) -> Result when
-	State :: cleanup_state(),
-	Result :: cache_full | normal.
-cleanup_mode(#cleanup_state{tables = #tables{data_table = DataTable}, memory_max = MemoryMax}) ->
-    cleanup_mode(DataTable, MemoryMax).
-
-%% @private
-%% @doc Returns clear-up mode.
-
--spec cleanup_mode(DataTable, MemoryMax) -> Result when
-	DataTable :: ets:tab(), 
-	MemoryMax :: non_neg_integer(),
-	Result :: cache_full | normal.
-cleanup_mode(DataTable, MemoryMax) ->
-    Memory = ets:info(DataTable, memory),
-    if 
-        Memory >= MemoryMax -> cache_full;
-        true -> normal
-    end.
+-spec memory_words(tables()) -> non_neg_integer().
+memory_words(Tables) ->
+    [{binary_bytes, Bytes}] = ets:lookup(Tables#tables.memory_table, binary_bytes),
+    WordSize = erlang:system_info(wordsize),
+    (Bytes + WordSize - 1) div WordSize
+        + lists:sum([ets:info(T, memory) || T <- [Tables#tables.meta_table,
+            Tables#tables.deps_table, Tables#tables.data_table, Tables#tables.memory_table]]).
 
 
 %% @private
