@@ -389,8 +389,7 @@ memo_key({M,F}) ->
 	Result :: ok.
 memo_send_replies(Key, Value, Server) ->
     Pids = get_waiting_pids(Key, Server),
-    [ catch gen_server:reply(Pid, {ok, Value}) || Pid <- Pids ],
-    ok.
+    reply_waiters(Pids, {ok, Value}).
 
 
 %% @private
@@ -404,10 +403,24 @@ memo_send_replies(Key, Value, Server) ->
     Key :: key(),
     Exception :: exception_reply(),
     Server :: depcache_server(),
-    Result :: list().
+    Result :: ok.
 memo_send_errors(Key, Exception, Server) ->
     Pids = get_waiting_pids(Key, Server),
-    [ catch gen_server:reply(Pid, Exception) || Pid <- Pids ].
+    reply_waiters(Pids, Exception).
+
+
+%% @private
+%% A failed reply must not prevent delivery to the remaining waiters.
+-spec reply_waiters([{pid(), gen_server:reply_tag()}], term()) -> ok.
+reply_waiters(Waiters, Reply) ->
+    lists:foreach(
+        fun(From) ->
+            try gen_server:reply(From, Reply)
+            catch
+                _:_ -> ok
+            end
+        end,
+        Waiters).
 
 
 %% @doc Add the key to the depcache, hold it for `3600' seconds and no dependencies.
@@ -970,7 +983,7 @@ handle_info({'DOWN', Ref, process, _Pid, _Reason}, #state{ writers = Writers }=S
         {Key, Writers1} ->
             WaitPids1 = case maps:take(Key, State#state.wait_pids) of
                            {{_MaxAge, List, Ref}, WaitPids} ->
-                               _ = [ catch gen_server:reply(From, {error, premature_exit}) || From <- List ],
+                               reply_waiters(List, {error, premature_exit}),
                                WaitPids;
                            _ -> State#state.wait_pids
                        end,
@@ -1172,7 +1185,7 @@ handle_call_set({Key, Data, MaxAge, Depend, Bytes, Words}, #state{tables=Tables}
     %% Check if other processes are waiting for this key, send them the data
     case maps:take(Key, State1#state.wait_pids) of
         {{_MaxAge, List, WriterRef}, WaitPids} ->
-            _ = [ catch gen_server:reply(From, {ok, Data}) || From <- List ],
+            reply_waiters(List, {ok, Data}),
             _ = erlang:demonitor(WriterRef, [flush]),
             Writers = maps:without([WriterRef], State#state.writers),
             {reply, ok, State1#state{writers=Writers, wait_pids=WaitPids}};
