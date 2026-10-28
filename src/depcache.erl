@@ -3,7 +3,7 @@
 %% @doc Depcache API
 %%
 %% == depcache API ==
-%% {@link flush/1}, {@link flush/2}, {@link get/2},	{@link get/3}, {@link get_subkey/3}, 
+%% {@link flush/1}, {@link flush/2}, {@link get/2},	{@link get/3}, {@link get_subkey/3},
 %% {@link get_wait/2}, {@link set/3}, {@link set/4},	{@link set/5}, {@link size/1}
 %% <br />
 %% {@link memo/2}, {@link memo/3}, {@link memo/4}, {@link memo/5}
@@ -19,9 +19,9 @@
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
-%% 
+%%
 %%     http://www.apache.org/licenses/LICENSE-2.0
-%% 
+%%
 %% Unless required by applicable law or agreed to in writing, software
 %% distributed under the License is distributed on an "AS IS" BASIS,
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -106,7 +106,7 @@
 
 %% @doc Start a depcache process.
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#start_link-3 gen_server:start_link/3].
 %%
 %% For Config, you can pass:
@@ -119,7 +119,7 @@
 %% @param Config configuration options
 %% @returns Result of starting gen_server item.
 
--spec start_link(Config) -> Result when 
+-spec start_link(Config) -> Result when
     Config :: config(),
     Result :: {ok, pid()} | ignore | {error, term()}.
 start_link(Config) when is_map(Config) ->
@@ -131,7 +131,7 @@ start_link(Config) ->
 
 %% @doc Start a named depcache process.
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#start_link-4 gen_server:start_link/4].
 %%
 %% For Config, you can pass:
@@ -145,8 +145,8 @@ start_link(Config) ->
 %% @param Config configuration options
 %% @returns Result of starting gen_server item.
 
--spec start_link(Name, Config) -> Result when 
-    Name :: atom(), 
+-spec start_link(Name, Config) -> Result when
+    Name :: atom(),
     Config :: config(),
     Result :: {ok, pid()} | ignore | {error, term()}.
 start_link(Name, Config) when is_map(Config) ->
@@ -241,7 +241,7 @@ ensure_valid_config(Config) ->
 %% @param Fun a function for producing a value
 %% @returns cached value
 
--spec memo( Fun, Server ) -> Result when 
+-spec memo( Fun, Server ) -> Result when
     Fun :: memo_fun(),
     Server :: depcache_server(),
     Result :: any().
@@ -252,7 +252,7 @@ memo(Fun, Server) ->
 %% @doc If Fun is a function then cache for an hour given the key. If
 %%      Fun is a {M,F,A} tuple then derive the key from the tuple and
 %%      cache for `MaxAge' seconds.
-%% 
+%%
 %% @param Fun a function for producing a value1
 %% @param MaxAge a caching time
 %% @param Key a cache item key
@@ -275,7 +275,7 @@ memo(Fun, Key, Server) when is_function(Fun) ->
 %% @returns cached value
 %% @equiv memo(Fun, Key, MaxAge, [], Server)
 
--spec memo( Fun, Key, MaxAge, Server ) -> Result when 
+-spec memo( Fun, Key, MaxAge, Server ) -> Result when
     Fun :: memo_fun(),
     Key :: key(),
     MaxAge :: max_age_secs(),
@@ -378,7 +378,7 @@ memo_key({M,F}) ->
 %% @private
 %% @doc Send the calculated value to the processes waiting for the result.
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#reply-2 gen_server:reply/2].
 %%
 
@@ -396,7 +396,7 @@ memo_send_replies(Key, Value, Server) ->
 %% @private
 %% @doc Send an error to the processes waiting for the result.
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#reply-2 gen_server:reply/2].
 %%
 
@@ -440,7 +440,7 @@ set(Key, Data, MaxAge, Server) ->
 %% @param MaxAge maximum lifetime of an element in the cache
 %% @param Depend list of subkeys
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#call-2 gen_server:call/2].
 %%
 
@@ -458,11 +458,11 @@ set(Key, Data, MaxAge, Depend, Server) ->
     gen_server:call(Server, {set, Key, Data, MaxAge, Depend, Bytes, Words}).
 
 
-%% @doc Fetch the key from the cache, when the key does not exist then lock the entry and let 
+%% @doc Fetch the key from the cache, when the key does not exist then lock the entry and let
 %% the calling process insert the value. All other processes requesting the key will wait till
 %% the key is updated and receive the key's new value.
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#call-3 gen_server:call/3].
 %%
 
@@ -483,7 +483,7 @@ get_wait(Key, Server) ->
 %% @doc Fetch the queue of pids that are waiting for a `get_wait/2'. This flushes the queue and
 %% the key from the depcache.
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#call-3 gen_server:call/3].
 %%
 %% @see get_wait/2
@@ -493,14 +493,14 @@ get_wait(Key, Server) ->
     Server :: depcache_server(),
     Result :: [{pid(), Tag}],
     Tag :: gen_server:reply_tag().
-	
+
 get_waiting_pids(Key, Server) ->
     gen_server:call(Server, {get_waiting_pids, Key}, ?MAX_GET_WAIT*1000).
 
 
 %% @doc Fetch the key from the cache, return the data or an `undefined' if not found (or not valid).
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#call-2 gen_server:call/2].
 %%
 
@@ -517,7 +517,7 @@ get(Key, Server) ->
 
 %% @doc Fetch the key from the cache, return the data or an `undefined' if not found (or not valid)
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#call-2 gen_server:call/2].
 %%
 
@@ -544,7 +544,7 @@ get_subkey(Key, SubKey, Server) ->
 
 %% @doc Fetch the key from the cache, return the data or an `undefined' if not found (or not valid)
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#call-2 gen_server:call/2].
 %%
 
@@ -555,7 +555,7 @@ get_subkey(Key, SubKey, Server) ->
     Result :: {ok, any()} | undefined.
 get(Key, SubKey, Server) ->
     case get_process_dict(Key, Server) of
-        undefined -> 
+        undefined ->
             undefined;
         depcache_disabled ->
             gen_server:call(Server, {get, Key, SubKey});
@@ -566,7 +566,7 @@ get(Key, SubKey, Server) ->
 
 %% @doc Flush the key and all keys depending on that key
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#call-2 gen_server:call/2].
 %%
 
@@ -581,7 +581,7 @@ flush(Key, Server) ->
 
 %% @doc Flush all keys from the caches
 %% <br/>
-%% <b>See also:</b> 
+%% <b>See also:</b>
 %% [http://erlang.org/doc/man/gen_server.html#call-2 gen_server:call/2].
 %%
 
@@ -762,7 +762,7 @@ get_now() ->
 %% @private
 %% @doc Initialize the depcache.  Creates ets tables for the deps, meta and data.  Spawns garbage collector.
 
--spec init(Config) -> Result when 
+-spec init(Config) -> Result when
     Config :: config_map(),
     State :: state(),
     Result :: {ok, State}.
@@ -816,7 +816,7 @@ init(Config) ->
 %% @private
 %% @doc Handling call messages
 
--spec handle_call(Request, From, State) -> Result when 
+-spec handle_call(Request, From, State) -> Result when
     Request :: size,
     From :: {pid(), gen_server:reply_tag()},
     State :: state(),
@@ -829,7 +829,7 @@ init(Config) ->
     Deps_table :: ets:tab(),
     Data_table :: ets:tab(),
     Result :: {reply, {ok, {Meta_table, Deps_table, Data_table}}, State};
-(Request, From, State) -> Result when 
+(Request, From, State) -> Result when
     Request :: get_wait,
     From :: {pid(), gen_server:reply_tag()},
     State :: state(),
@@ -873,7 +873,7 @@ init(Config) ->
     From :: {pid(), gen_server:reply_tag()},
     State :: state(),
     Result :: {reply, ok, State};
-(Request, From, State) -> Result when	
+(Request, From, State) -> Result when
 	Request :: flush,
 	From :: {pid(), gen_server:reply_tag()},
 	State :: state(),
@@ -924,12 +924,12 @@ handle_call(flush, _From, State) ->
 %% @private
 %% @doc Handling cast messages
 
--spec handle_cast(Request, State) -> Result when 
+-spec handle_cast(Request, State) -> Result when
     Request :: {flush, Key} | flush | any(),
     Key :: key(),
     State :: state(),
     Result :: {noreply, State}.
-	
+
 handle_cast({flush, Key, Serial}, State) ->
     flush_if_current(Key, Serial, State),
     {noreply, State};
@@ -949,15 +949,15 @@ handle_cast(flush, #state{tables = Tables} = State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-%% @private    
+%% @private
 %% @doc This function is called by a `gen_server' process when when it receives `tick' or
 %% any other message than a synchronous or asynchronous request (or a system message).
 
--spec handle_info(Info, State) -> Result when 
+-spec handle_info(Info, State) -> Result when
     Info :: tick | any(),
     State :: state(),
     Result :: {noreply, State}.
-	
+
 handle_info(tick, State) ->
     timer:send_after(1000, tick),
     erase_process_dict(),
@@ -977,7 +977,7 @@ handle_info({'DOWN', Ref, process, _Pid, _Reason}, #state{ writers = Writers }=S
             {noreply, State#state{ writers = Writers1, wait_pids = WaitPids1 }}
     end;
 
-handle_info(_Msg, State) -> 
+handle_info(_Msg, State) ->
     {noreply, State}.
 
 %% @private
@@ -995,7 +995,7 @@ terminate(_Reason, #state{cleanup_pid=Pid}) ->
     ok.
 
 
-%% @doc This function is called by a gen_server process when it is to update 
+%% @doc This function is called by a gen_server process when it is to update
 %% its internal state during a release upgrade/downgrade.
 %% @private
 
@@ -1004,16 +1004,16 @@ terminate(_Reason, #state{cleanup_pid=Pid}) ->
 	State :: state(),
 	Extra :: term(),
 	Result :: {ok, State}.
-	
+
 code_change(_OldVersion, State, _Extra) -> {ok, State}.
 
 
 %% @private
 %% @doc Return the ets-tables used by the cache
 %% @see handle_call/3
-%% 	
+%%
 
--spec handle_call_get_tables(State) -> Result when 
+-spec handle_call_get_tables(State) -> Result when
 	State :: state(),
 	Meta_table :: ets:tab(),
 	Deps_table :: ets:tab(),
@@ -1027,9 +1027,9 @@ handle_call_get_tables(#state{tables = Tables} = State) ->
 %% @doc Fetch a key from the cache. When the key is not available then let processes wait till the
 %% key is available.
 %% @see handle_call/3
-%% 
+%%
 
--spec handle_call_get_wait(Key, From, State) -> Result when 
+-spec handle_call_get_wait(Key, From, State) -> Result when
 	Key :: key(),
 	From :: {pid(), atom()},
 	State :: state(),
@@ -1067,7 +1067,7 @@ handle_call_get_wait(Key, From, #state{tables = Tables} = State) ->
 
                     {reply, undefined, State#state{wait_pids=WaitPids, writers=Writers1}}
             end;
-        {ok, _Value} = Found -> 
+        {ok, _Value} = Found ->
             {reply, Found, State}
     end.
 
@@ -1075,7 +1075,7 @@ handle_call_get_wait(Key, From, #state{tables = Tables} = State) ->
 %% @private
 %% @doc Return the list of processes waiting for the rendering of a key. Flush the queue and the key.
 %% @see handle_call/3
-%% 
+%%
 
 -spec handle_call_get_waiting_pids(Key, State) -> Result when
 	Key :: key(),
@@ -1098,7 +1098,7 @@ handle_call_get_waiting_pids(Key, State) ->
 %% @private
 %% @doc Fetch a key from the cache, returns `undefined' when not found.
 %% @see handle_call/3
-%% 
+%%
 
 -spec handle_call_get(Key, State) -> Result when
 	Key :: key(),
@@ -1109,11 +1109,11 @@ handle_call_get(Key, State) ->
     {reply, get_in_depcache(Key, State), State}.
 
 
-%% @private	
+%% @private
 %% @doc Fetch a subkey from a key from the cache, returns `undefined' when not found.
 %% This is useful when the cached data is very large and the fetched data is small in comparison.
 %% @see handle_call/3
-%% 
+%%
 
 -spec handle_call_get_sub_key(Request, State) -> Result when
 	Request :: {Key, SubKey},
@@ -1132,7 +1132,7 @@ handle_call_get_sub_key({Key, SubKey}, State) ->
 %% @private
 %% @doc Add an entry to the cache table.
 %% @see handle_call/3
-%% 
+%%
 
 -spec handle_call_set({key(), term(), max_age_secs(), dependencies(),
     non_neg_integer(), non_neg_integer()}, state()) -> {reply, ok, state()}.
@@ -1202,7 +1202,7 @@ handle_call_flush(Key, State) ->
 
 -spec handle_call_flush_all(State) -> Result when
 	State :: state(),
-	Result :: {reply, ok, State}.	
+	Result :: {reply, ok, State}.
 handle_call_flush_all(#state{tables = Tables} = State) ->
     ets:delete_all_objects(Tables#tables.data_table),
     ets:delete_all_objects(Tables#tables.meta_table),
@@ -1211,12 +1211,12 @@ handle_call_flush_all(#state{tables = Tables} = State) ->
     erase_process_dict(),
     {reply, ok, State}.
 
-	
+
 %% @private
 %% @doc Fetch a value, from within the depcache process.  Cache the value in the process dictionary of the depcache.
 
 -spec get_in_depcache(Key, State) -> Result when
-	Key :: key(), 
+	Key :: key(),
 	State :: state(),
 	Result :: term().
 get_in_depcache(Key, State) ->
@@ -1235,7 +1235,7 @@ get_in_depcache(Key, State) ->
             Value
     end.
 
-	
+
 %% @private
 %% @doc Increment input value.
 
@@ -1270,18 +1270,18 @@ get_in_depcache_ets(Key, #state{tables = Tables} = State) ->
 
 
 %% @private
-%% @doc Get a value from the depache.  Called by the depcache and other processes.
+%% @doc Get a value from the depcache.  Called by the depcache and other processes.
 
 -spec get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) -> Result when
-	Key :: key(), 
-	Now :: sec(), 
-	MetaTable :: ets:tab(), 
-	DepsTable :: ets:tab(), 
+	Key :: key(),
+	Now :: sec(),
+	MetaTable :: ets:tab(),
+	DepsTable :: ets:tab(),
 	DataTable :: ets:tab(),
 	Result :: retry | {flush, non_neg_integer()} | undefined | {ok, term()}.
 get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) ->
     case ets:lookup(MetaTable, Key) of
-        [] -> 
+        [] ->
             undefined;
         [#meta{serial=Serial, expire=Expire, depend=Depend}] ->
             get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend)
@@ -1290,18 +1290,18 @@ get_concurrent(Key, Now, MetaTable, DepsTable, DataTable) ->
 %% @hidden
 
 -spec get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend) -> Result when
-	Key :: key(), 
-	Now :: sec(), 
-	DepsTable :: ets:tab(), 
+	Key :: key(),
+	Now :: sec(),
+	DepsTable :: ets:tab(),
 	DataTable :: ets:tab(),
-	Serial :: non_neg_integer(), 
-	Expire :: sec(), 
+	Serial :: non_neg_integer(),
+	Expire :: sec(),
 	Depend :: dependencies(),
 	Result :: retry | {flush, non_neg_integer()} | undefined | {ok, term()}.
-get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend) ->	
+get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend) ->
 	%% Check expiration
 	case Expire >= Now of
-		false -> 
+		false ->
 			{flush, Serial};
 		true ->
 			get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend)
@@ -1310,13 +1310,13 @@ get_concurrent(Key, Now, DepsTable, DataTable, Serial, Expire, Depend) ->
 %% @hidden
 
 -spec get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend) -> Result when
-	Key :: key(), 
-	DepsTable :: ets:tab(), 
+	Key :: key(),
+	DepsTable :: ets:tab(),
 	DataTable :: ets:tab(),
-	Serial :: non_neg_integer(), 
+	Serial :: non_neg_integer(),
 	Depend :: dependencies(),
 	Result :: retry | {flush, non_neg_integer()} | undefined | {ok, term()}.
-get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend) ->	
+get_concurrent_check_depend(Key, DepsTable, DataTable, Serial, Depend) ->
 	%% Check dependencies
 	case check_depend(Serial, Depend, DepsTable) of
 		false ->
@@ -1430,8 +1430,8 @@ binary_bytes(_) -> 0.
 %% @doc Check if all dependencies are still valid, that is they have a serial before or equal to the serial of the entry.
 
 -spec check_depend(Serial, Depend, DepsTable) -> Result when
-	Serial :: non_neg_integer(), 
-	Depend :: [depend()], 
+	Serial :: non_neg_integer(),
+	Depend :: [depend()],
 	DepsTable :: ets:tab(),
 	Result :: true | false.
 check_depend(_Serial, [], _DepsTable) ->
@@ -1620,7 +1620,7 @@ memory_words(Tables) ->
 %% @private
 %% @doc Returns the current tick count.
 
--spec now_sec() -> Result when 
+-spec now_sec() -> Result when
 	Result :: sec().
 now_sec() ->
     {M,S,_M} = os:timestamp(),
@@ -1645,12 +1645,12 @@ erase_process_dict() ->
 -dialyzer({no_match, callback/3}).
 
 -spec callback(Type, Name, MFA) -> Result when
-	Type :: eviction | atom(), 
-	Name ::  atom(), 
+	Type :: eviction | atom(),
+	Name ::  atom(),
 	MFA :: undefined,
 	Result :: nop | ok | term();
 (Type, Name, MFA) -> Result when
-	Type :: eviction | atom(), 
+	Type :: eviction | atom(),
 	Name ::  atom(),
 	MFA :: mfargs(),
 	Result :: nop | ok | term().
