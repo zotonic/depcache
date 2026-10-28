@@ -25,6 +25,25 @@ Start a depcache server like this:
 
 Now you can get and set values using the returned `Server` pid.
 
+Options
+-------
+
+The config is a map or proplist with these keys:
+
+- `memory_max`: size limit of the cached data in MB, default 100. When the
+  cache grows past it, the cleanup process evicts entries until it fits.
+- `callback`: an `{Module, Function, Args}` called on cache events, such as
+  an eviction.
+- `lru`: default `false`. When `true`, a full cache evicts the least recently
+  used entries instead of random ones. Every successful lookup does one
+  lock-free atomic store of the current time into a slot chosen by hashing
+  the key, and the cleanup process evicts the oldest tenth of every batch it
+  sweeps while the cache is full. Only useful if the cache actually reaches
+  `memory_max`.
+- `lru_slots`: number of slots in the LRU access-time array, default 262144
+  (2MB, 8 bytes per slot). Keys that hash to the same slot share an access
+  time. Use at least four slots per cached entry.
+
 
 ## Documentation generation
 

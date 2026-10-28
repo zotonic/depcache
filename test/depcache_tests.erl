@@ -197,3 +197,93 @@ fill_until_full(C, Data, MemoryMax, N) ->
             depcache:set({key, N}, lists:seq(1, 100), C),
             fill_until_full(C, Data, MemoryMax, N + 1)
     end.
+
+
+%% The lru field is the last field of the #meta record; the record is private to depcache.
+-define(META_LRU(Row), element(tuple_size(Row), Row)).
+
+lru_config_test() ->
+    ?assertError(badarg, depcache:start_link(#{lru => yes})),
+    ?assertError(badarg, depcache:start_link(#{lru_slots => 0})),
+    {ok, C} = depcache:start_link([{lru, true}, {lru_slots, 1024}]),
+    ok = depcache:set(a, 1, C),
+    ?assertEqual({ok, 1}, depcache:get(a, C)),
+    ok.
+
+lru_disabled_by_default_test() ->
+    {ok, C} = depcache:start_link(#{}),
+    {ok, {Meta, _Deps, _Data}} = gen_server:call(C, get_tables),
+    ok = depcache:set(a, 1, C),
+    [Row] = ets:lookup(Meta, a),
+    ?assertEqual(undefined, ?META_LRU(Row)),
+    ?assertEqual({ok, 1}, depcache:get(a, C)),
+    ok.
+
+lru_touch_on_read_test() ->
+    {ok, C} = depcache:start_link(#{lru => true, lru_slots => 1024}),
+    {ok, {Meta, _Deps, _Data}} = gen_server:call(C, get_tables),
+    ok = depcache:set(a, 1, C),
+    [Row] = ets:lookup(Meta, a),
+    {Ref, Slot} = ?META_LRU(Row),
+    ?assert(is_integer(Slot) andalso Slot >= 1 andalso Slot =< 1024),
+    % The set stamps the slot with the server's clock
+    T0 = atomics:get(Ref, Slot),
+    ?assert(abs(T0 - now_sec()) =< 2),
+    % A read a second later moves the stamp forward
+    timer:sleep(1100),
+    ?assertEqual({ok, 1}, depcache:get(a, C)),
+    T1 = atomics:get(Ref, Slot),
+    ?assert(T1 > T0),
+    % A miss or a flush does not touch anything
+    ok = depcache:flush(a, C),
+    ?assertEqual(undefined, depcache:get(a, C)),
+    ?assertEqual(T1, atomics:get(Ref, Slot)),
+    ok.
+
+lru_eviction_keeps_hot_keys_test_() ->
+    {timeout, 30, fun lru_eviction_keeps_hot_keys/0}.
+
+lru_eviction_keeps_hot_keys() ->
+    {ok, C} = depcache:start_link(#{memory_max => 1, lru => true}),
+    {ok, {_Meta, _Deps, Data}} = gen_server:call(C, get_tables),
+    MemoryMax = 1024 * 1024 div erlang:system_info(wordsize),
+
+    % Fill most of the cache with cold entries, then add a few hot ones
+    ColdCount = fill_until(C, Data, MemoryMax * 8 div 10, 0),
+    HotKeys = [ {hot, N} || N <- lists:seq(1, 10) ],
+    [ depcache:set(K, lists:seq(1, 100), C) || K <- HotKeys ],
+
+    % A second later, read the hot keys so their access time is newer than
+    % everything inserted so far
+    timer:sleep(1100),
+    [ ?assertMatch({ok, _}, depcache:get(K, C)) || K <- HotKeys ],
+
+    % Push the cache well over its limit, so that about a third of it has to be
+    % evicted. The cleanup process checks the size once a second, so this fill
+    % mostly completes before it starts evicting.
+    Total = fill_until(C, Data, MemoryMax * 3 div 2, ColdCount) + length(HotKeys),
+    timer:sleep(2500),
+    _ = sys:get_state(C),
+
+    ?assert(ets:info(Data, memory) < MemoryMax),
+    ?assert(ets:info(Data, size) < Total * 8 div 10),
+    % Only enough entries to get below memory_max are evicted
+    ?assert(ets:info(Data, size) > Total div 2),
+    % The least recently used entries went first, the hot ones all survived.
+    % With random eviction each hot key would have had roughly one chance in
+    % three of being evicted.
+    [ ?assertMatch({ok, _}, depcache:get(K, C)) || K <- HotKeys ],
+    ok.
+
+fill_until(C, Data, Words, N) ->
+    case ets:info(Data, memory) >= Words of
+        true ->
+            N;
+        false ->
+            depcache:set({key, N}, lists:seq(1, 100), C),
+            fill_until(C, Data, Words, N + 1)
+    end.
+
+now_sec() ->
+    {M, S, _} = os:timestamp(),
+    M * 1000000 + S.
