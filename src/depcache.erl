@@ -90,12 +90,31 @@
 -type lru_ref() :: undefined | atomics:atomics_ref().
 -type lru() :: undefined | pos_integer().
 
--record(state,  {now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map(), writers :: map(), cleanup_pid :: pid(), memory_max :: non_neg_integer(), pressured = false :: boolean(),
-                 lru = undefined :: undefined | {atomics:atomics_ref(), pos_integer()} }).
--record(meta,   {key :: key(), expire :: sec(), serial :: non_neg_integer(), depend :: dependencies(), binary_bytes = 0 :: non_neg_integer(), memory_words = 0 :: non_neg_integer(),
-                 lru = undefined :: lru()}).
--record(depend, {key :: key(), serial :: non_neg_integer(), refs = 0 :: non_neg_integer()}).
-
+-record(state,  {
+	now :: sec(),
+	serial :: non_neg_integer(),
+	tables :: tables(),
+	wait_pids :: map(),
+	writers :: map(),
+	cleanup_pid :: pid(),
+	memory_max :: non_neg_integer(),
+	pressured = false :: boolean(),
+    lru = undefined :: undefined | {atomics:atomics_ref(), pos_integer()}
+}).
+-record(meta,{
+	key :: key(),
+	expire :: sec(),
+	serial :: non_neg_integer(),
+	depend :: dependencies(),
+	binary_bytes = 0 :: non_neg_integer(),
+	memory_words = 0 :: non_neg_integer(),
+	lru = undefined :: lru()
+}).
+-record(depend, {
+	key :: key(),
+	serial :: non_neg_integer(),
+	refs = 0 :: non_neg_integer()
+}).
 -record(cleanup_state, {
     pid :: pid(),
     tables :: #tables{},
@@ -105,20 +124,42 @@
     lru = undefined :: lru_ref()
 }).
 
--type tables() :: #tables{meta_table :: ets:tab(), deps_table :: ets:tab(), data_table :: ets:tab(), memory_table :: ets:tab()}.
--type state() :: #state{now :: sec(), serial :: non_neg_integer(), tables :: tables(), wait_pids :: map(), writers :: map()}.
--type depend() :: #depend{key :: key(), serial :: non_neg_integer()}.
--type cleanup_state() :: #cleanup_state{pid :: pid(), tables :: tables(), name :: atom(), memory_max :: non_neg_integer(),
-                                        callback :: callback() | undefined, lru :: lru_ref()}.
+-type tables() :: #tables{
+			meta_table :: ets:tab(),
+			deps_table :: ets:tab(),
+			data_table :: ets:tab(),
+			memory_table :: ets:tab()
+		}.
+-type state() :: #state{
+			now :: sec(),
+			serial :: non_neg_integer(),
+			tables :: tables(),
+			wait_pids :: map(),
+			writers :: map()
+		}.
+-type depend() :: #depend{
+			key :: key(),
+			serial :: non_neg_integer()
+		}.
+-type cleanup_state() :: #cleanup_state{
+			pid :: pid(),
+			tables :: tables(),
+			name :: atom(),
+			memory_max :: non_neg_integer(),
+            callback :: callback() | undefined,
+			lru :: lru_ref()
+		}.
 -type config() :: config_map() | config_proplist().
--type config_map() :: #{memory_max => non_neg_integer() | undefined,
-                        callback => callback() | undefined,
-                        lru => boolean(),
-                        lru_slots => pos_integer()}.
+-type config_map() :: #{
+			memory_max => non_neg_integer() | undefined,
+            callback => callback() | undefined,
+            lru => boolean(),
+            lru_slots => pos_integer()
+		}.
 -type config_proplist() :: list({memory_max, non_neg_integer | undefined}
-                              | {callback, callback() | undefined}
-                              | {lru, boolean()}
-                              | {lru_slots, pos_integer()}).
+                         | {callback, callback() | undefined}
+                         | {lru, boolean()}
+                         | {lru_slots, pos_integer()}).
 
 
 %% @doc Start a depcache process.
